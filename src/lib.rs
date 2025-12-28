@@ -77,7 +77,7 @@ pub use commit::{CommitBuilder, SvndiffMode};
 pub use editor::{EditorCommand, EditorEvent, EditorEventHandler, Report, ReportCommand};
 pub use error::{ServerError, ServerErrorItem, SvnError};
 pub use pool::{PooledSession, SessionPool};
-pub use textdelta::{TextDeltaApplier, apply_textdelta};
+pub use textdelta::{RecordedTextDelta, TextDeltaApplier, TextDeltaRecorder, apply_textdelta};
 /// Convenience alias for results returned by this crate.
 pub type Result<T> = std::result::Result<T, SvnError>;
 pub use options::{
