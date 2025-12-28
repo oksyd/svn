@@ -1,3 +1,11 @@
+## [0.1.2] - 2025-12-28
+
+### ⚙️ Miscellaneous Tasks
+
+- Add CHANGELOG.md
+- *(ci)* Update
+- Add LICENSE
+- *(docs)* Update README.md
 ## [0.1.1] - 2025-12-28
 
 ### 🐛 Bug Fixes
@@ -15,3 +23,4 @@
 
 - Init commit
 - Update Cargo.toml
+- Release svn version 0.1.1
