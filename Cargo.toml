@@ -1,0 +1,57 @@
+[package]
+name = "svn"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92.0"
+license = "MIT"
+description = "Async client for Subversion's svn:// (ra_svn) protocol."
+readme = "README.md"
+documentation = "https://docs.rs/svn"
+repository = "https://github.com/lvillis/svn-rs"
+homepage = "https://github.com/lvillis/svn-rs"
+keywords = ["svn", "subversion"]
+categories = ["network-programming"]
+include = [
+    "Cargo.lock",
+    "Cargo.toml",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "src/**",
+    "tests/**",
+]
+
+[features]
+default = []
+serde = ["dep:serde"]
+cyrus-sasl = ["dep:base64", "dep:libloading"]
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+dbg_macro = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[dependencies]
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"], optional = true }
+hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
+hmac = { version = "0.12.1", default-features = false, features = ["std"] }
+libloading = { version = "0.9.0", default-features = false, optional = true }
+md-5 = { version = "0.10.6", default-features = false, features = ["std"] }
+serde = { version = "1.0.228", default-features = false, features = ["derive", "std"], optional = true }
+thiserror = { version = "2.0.17", default-features = false, features = ["std"] }
+tokio = { version = "1.48.0", default-features = false, features = ["io-util", "net", "rt", "time"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+proptest = "1.9.0"
+tempfile = "3.24.0"
