@@ -40,6 +40,15 @@ jobs:
             cargo_args: ""
           - os: ubuntu-latest
             rust: 1.92.0
+            cargo_args: "--no-default-features"
+          - os: ubuntu-latest
+            rust: 1.92.0
+            cargo_args: "--features serde"
+          - os: ubuntu-latest
+            rust: 1.92.0
+            cargo_args: "--features cyrus-sasl"
+          - os: ubuntu-latest
+            rust: 1.92.0
             cargo_args: "--all-features"
           - os: ubuntu-latest
             rust: stable

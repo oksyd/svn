@@ -12,7 +12,7 @@ pub struct SvnUrl {
     pub host: String,
     /// TCP port portion of the URL.
     pub port: u16,
-    /// Full normalized URL string (`svn://host:port/path`).
+    /// Full normalized URL string (`svn://host:port/path`, IPv6 uses brackets).
     pub url: String,
 }
 
@@ -28,26 +28,60 @@ impl SvnUrl {
     /// ```
     pub fn parse(input: &str) -> Result<Self, SvnError> {
         let input = input.trim();
-        if !input.to_ascii_lowercase().starts_with("svn://") {
+        if input.len() < "svn://".len() || !input[.."svn://".len()].eq_ignore_ascii_case("svn://") {
             return Err(SvnError::InvalidUrl(
                 "only svn:// URLs are supported".to_string(),
             ));
         }
 
-        let mut rest = &input["svn://".len()..];
-        let mut path = "/";
-        if let Some((authority, p)) = rest.split_once('/') {
-            rest = authority;
-            path = &input[(input.len() - p.len() - 1)..];
-        }
-
-        let (host, port) = if let Some((h, port_str)) = rest.rsplit_once(':') {
-            let port = port_str
-                .parse::<u16>()
-                .map_err(|_| SvnError::InvalidUrl(format!("invalid port in url: {input}")))?;
-            (h.to_string(), port)
+        let rest = &input["svn://".len()..];
+        let (authority, path) = if let Some((authority, p)) = rest.split_once('/') {
+            let path = &rest[(rest.len() - p.len() - 1)..];
+            (authority, path)
         } else {
-            (rest.to_string(), 3690)
+            (rest, "/")
+        };
+
+        let (host, port) = if let Some(authority) = authority.strip_prefix('[') {
+            let Some(end) = authority.find(']') else {
+                return Err(SvnError::InvalidUrl(format!("invalid url: {input}")));
+            };
+            let host = &authority[..end];
+            if host.trim().is_empty() {
+                return Err(SvnError::InvalidUrl(format!(
+                    "missing host in url: {input}"
+                )));
+            }
+            let after = &authority[end + 1..];
+            if after.is_empty() {
+                (host.to_string(), 3690)
+            } else if let Some(port_str) = after.strip_prefix(':') {
+                let port = port_str
+                    .parse::<u16>()
+                    .map_err(|_| SvnError::InvalidUrl(format!("invalid port in url: {input}")))?;
+                (host.to_string(), port)
+            } else {
+                return Err(SvnError::InvalidUrl(format!("invalid url: {input}")));
+            }
+        } else {
+            match authority.matches(':').count() {
+                0 => (authority.to_string(), 3690),
+                1 => {
+                    let (h, port_str) = authority
+                        .rsplit_once(':')
+                        .ok_or_else(|| SvnError::InvalidUrl(format!("invalid url: {input}")))?;
+                    let port = port_str.parse::<u16>().map_err(|_| {
+                        SvnError::InvalidUrl(format!("invalid port in url: {input}"))
+                    })?;
+                    (h.to_string(), port)
+                }
+                _ => {
+                    return Err(SvnError::InvalidUrl(
+                        "IPv6 addresses must be enclosed in brackets (e.g. svn://[::1]/repo)"
+                            .to_string(),
+                    ));
+                }
+            }
         };
 
         if host.trim().is_empty() {
@@ -56,8 +90,39 @@ impl SvnUrl {
             )));
         }
 
-        let url = format!("svn://{host}:{port}{path}");
+        let host_url = if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+            format!("[{host}]")
+        } else {
+            host.clone()
+        };
+        let url = format!("svn://{host_url}:{port}{path}");
         Ok(Self { host, port, url })
+    }
+
+    /// Returns a `host:port` string suitable for `TcpStream::connect`.
+    ///
+    /// IPv6 hosts are formatted with brackets.
+    pub fn socket_addr(&self) -> String {
+        let host = self.host.as_str();
+        if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+            format!("[{host}]:{}", self.port)
+        } else {
+            format!("{host}:{}", self.port)
+        }
+    }
+}
+
+impl std::fmt::Display for SvnUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.url)
+    }
+}
+
+impl std::str::FromStr for SvnUrl {
+    type Err = SvnError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 
@@ -110,5 +175,34 @@ mod tests {
     fn svn_url_parse_trims_and_accepts_uppercase_scheme() {
         let parsed = SvnUrl::parse("  SVN://example.com/repo  ").unwrap();
         assert_eq!(parsed.url, "svn://example.com:3690/repo");
+    }
+
+    #[test]
+    fn svn_url_parse_supports_ipv6_in_brackets() {
+        let parsed = SvnUrl::parse("svn://[::1]/repo").unwrap();
+        assert_eq!(parsed.host, "::1");
+        assert_eq!(parsed.port, 3690);
+        assert_eq!(parsed.url, "svn://[::1]:3690/repo");
+        assert_eq!(parsed.socket_addr(), "[::1]:3690");
+
+        let parsed = SvnUrl::parse("svn://[::1]:1234/repo").unwrap();
+        assert_eq!(parsed.host, "::1");
+        assert_eq!(parsed.port, 1234);
+        assert_eq!(parsed.url, "svn://[::1]:1234/repo");
+        assert_eq!(parsed.socket_addr(), "[::1]:1234");
+    }
+
+    #[test]
+    fn svn_url_parse_rejects_unbracketed_ipv6() {
+        let err = SvnUrl::parse("svn://::1/repo").unwrap_err();
+        assert!(matches!(err, SvnError::InvalidUrl(_)));
+    }
+
+    #[test]
+    fn svn_url_from_str_uses_parse_and_display_uses_normalized_url() {
+        let url: SvnUrl = "svn://example.com/repo".parse().unwrap();
+        assert_eq!(url.url, "svn://example.com:3690/repo");
+        assert_eq!(url.to_string(), url.url);
+        assert_eq!(url.socket_addr(), "example.com:3690");
     }
 }

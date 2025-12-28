@@ -181,6 +181,7 @@ RUST_LOG=svn=debug
 ## 兼容性
 
 - 协议：`ra_svn` v2（仅 `svn://`）。
+- IPv6：支持带中括号的 URL（例如 `svn://[::1]/repo`）。
 - MSRV：Rust `1.92.0`（见 `Cargo.toml`）。
 - `serde`：通过 `serde` feature 可选开启。
 - Cyrus SASL：通过 `cyrus-sasl` feature 可选开启（运行时依赖 `libsasl2`）。

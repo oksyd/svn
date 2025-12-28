@@ -187,6 +187,7 @@ RUST_LOG=svn=debug
 ## Compatibility
 
 - Protocol: `ra_svn` v2 (`svn://` only).
+- IPv6: supported via bracketed URLs (for example `svn://[::1]/repo`).
 - MSRV: Rust `1.92.0` (see `Cargo.toml`).
 - Optional `serde` support via the `serde` feature.
 - Optional Cyrus SASL support via `cyrus-sasl` (runtime `libsasl2`).

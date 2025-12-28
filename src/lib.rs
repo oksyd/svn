@@ -41,9 +41,16 @@
 //! ## Protocol notes
 //!
 //! - Only `svn://` is supported (no `svn+ssh://`).
+//! - IPv6 URLs must use brackets (for example `svn://[::1]/repo`).
 //! - Built-in authentication mechanisms: `ANONYMOUS`, `PLAIN`, and `CRAM-MD5`.
 //!   With `cyrus-sasl`, the client can also use Cyrus SASL (including the
 //!   optional SASL security layer when negotiated).
+//!
+//! ## Custom transports
+//!
+//! If you need to bring your own transport (for example a custom proxy/tunnel),
+//! you can connect the stream yourself and then call
+//! [`RaSvnClient::open_session_with_stream`].
 //!
 //! ## Low-level access
 //!

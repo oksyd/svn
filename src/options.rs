@@ -32,12 +32,14 @@ impl GetFileOptions {
     }
 
     /// Requests file properties in the response.
+    #[must_use]
     pub fn with_props(mut self) -> Self {
         self.want_props = true;
         self
     }
 
     /// Requests inherited properties (if supported by the server).
+    #[must_use]
     pub fn with_iprops(mut self) -> Self {
         self.want_iprops = true;
         self
@@ -93,6 +95,7 @@ impl Default for LogOptions {
 
 impl LogOptions {
     /// Convenience constructor for a revision range.
+    #[must_use]
     pub fn between(start_rev: u64, end_rev: u64) -> Self {
         Self {
             start_rev: Some(start_rev),
@@ -131,18 +134,21 @@ impl ListOptions {
     }
 
     /// Sets the revision to list at.
+    #[must_use]
     pub fn with_rev(mut self, rev: u64) -> Self {
         self.rev = Some(rev);
         self
     }
 
     /// Requests additional entry fields from the server.
+    #[must_use]
     pub fn with_fields(mut self, fields: Vec<DirentField>) -> Self {
         self.fields = fields;
         self
     }
 
     /// Adds glob patterns to filter entries on the server side.
+    #[must_use]
     pub fn with_patterns(mut self, patterns: Vec<String>) -> Self {
         self.patterns = patterns;
         self
@@ -178,18 +184,21 @@ impl UpdateOptions {
     }
 
     /// Sets the revision to update to.
+    #[must_use]
     pub fn with_rev(mut self, rev: u64) -> Self {
         self.rev = Some(rev);
         self
     }
 
     /// Disables copyfrom arguments (for compatibility with older servers).
+    #[must_use]
     pub fn without_copyfrom_args(mut self) -> Self {
         self.send_copyfrom_args = false;
         self
     }
 
     /// Ignores ancestry when applying the update.
+    #[must_use]
     pub fn ignore_ancestry(mut self) -> Self {
         self.ignore_ancestry = true;
         self
@@ -228,18 +237,21 @@ impl SwitchOptions {
     }
 
     /// Sets the revision to switch to.
+    #[must_use]
     pub fn with_rev(mut self, rev: u64) -> Self {
         self.rev = Some(rev);
         self
     }
 
     /// Disables copyfrom arguments (for compatibility with older servers).
+    #[must_use]
     pub fn without_copyfrom_args(mut self) -> Self {
         self.send_copyfrom_args = false;
         self
     }
 
     /// Ignores ancestry when applying the switch.
+    #[must_use]
     pub fn ignore_ancestry(mut self) -> Self {
         self.ignore_ancestry = true;
         self
@@ -269,6 +281,7 @@ impl StatusOptions {
     }
 
     /// Sets the revision to compare against.
+    #[must_use]
     pub fn with_rev(mut self, rev: u64) -> Self {
         self.rev = Some(rev);
         self
@@ -307,18 +320,21 @@ impl DiffOptions {
     }
 
     /// Sets the revision to diff against.
+    #[must_use]
     pub fn with_rev(mut self, rev: u64) -> Self {
         self.rev = Some(rev);
         self
     }
 
     /// Ignores ancestry when producing the diff.
+    #[must_use]
     pub fn ignore_ancestry(mut self) -> Self {
         self.ignore_ancestry = true;
         self
     }
 
     /// Enables or disables requesting text deltas.
+    #[must_use]
     pub fn with_text_deltas(mut self, text_deltas: bool) -> Self {
         self.text_deltas = text_deltas;
         self
@@ -348,12 +364,14 @@ impl ReplayOptions {
     }
 
     /// Sets the low water mark.
+    #[must_use]
     pub fn with_low_water_mark(mut self, low_water_mark: u64) -> Self {
         self.low_water_mark = low_water_mark;
         self
     }
 
     /// Sets whether to request deltas.
+    #[must_use]
     pub fn with_send_deltas(mut self, send_deltas: bool) -> Self {
         self.send_deltas = send_deltas;
         self
@@ -386,12 +404,14 @@ impl ReplayRangeOptions {
     }
 
     /// Sets the low water mark.
+    #[must_use]
     pub fn with_low_water_mark(mut self, low_water_mark: u64) -> Self {
         self.low_water_mark = low_water_mark;
         self
     }
 
     /// Sets whether to request deltas.
+    #[must_use]
     pub fn with_send_deltas(mut self, send_deltas: bool) -> Self {
         self.send_deltas = send_deltas;
         self
@@ -417,18 +437,21 @@ impl LockOptions {
     }
 
     /// Sets a lock comment.
+    #[must_use]
     pub fn with_comment(mut self, comment: impl Into<String>) -> Self {
         self.comment = Some(comment.into());
         self
     }
 
     /// Enables stealing an existing lock.
+    #[must_use]
     pub fn steal_lock(mut self) -> Self {
         self.steal_lock = true;
         self
     }
 
     /// Sets a current revision constraint for the lock request.
+    #[must_use]
     pub fn with_current_rev(mut self, current_rev: u64) -> Self {
         self.current_rev = Some(current_rev);
         self
@@ -452,12 +475,14 @@ impl LockManyOptions {
     }
 
     /// Sets a lock comment.
+    #[must_use]
     pub fn with_comment(mut self, comment: impl Into<String>) -> Self {
         self.comment = Some(comment.into());
         self
     }
 
     /// Enables stealing existing locks.
+    #[must_use]
     pub fn steal_lock(mut self) -> Self {
         self.steal_lock = true;
         self
@@ -484,6 +509,7 @@ impl LockTarget {
     }
 
     /// Sets a current revision constraint for this target.
+    #[must_use]
     pub fn with_current_rev(mut self, current_rev: u64) -> Self {
         self.current_rev = Some(current_rev);
         self
@@ -507,12 +533,14 @@ impl UnlockOptions {
     }
 
     /// Sets the lock token.
+    #[must_use]
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.token = Some(token.into());
         self
     }
 
     /// Enables breaking the lock (force unlock).
+    #[must_use]
     pub fn break_lock(mut self) -> Self {
         self.break_lock = true;
         self
@@ -534,6 +562,7 @@ impl UnlockManyOptions {
     }
 
     /// Enables breaking locks (force unlock).
+    #[must_use]
     pub fn break_lock(mut self) -> Self {
         self.break_lock = true;
         self
@@ -560,6 +589,7 @@ impl UnlockTarget {
     }
 
     /// Sets the lock token for this target.
+    #[must_use]
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.token = Some(token.into());
         self
@@ -615,18 +645,21 @@ impl CommitOptions {
     }
 
     /// Sets lock tokens to be included in the commit.
+    #[must_use]
     pub fn with_lock_tokens(mut self, lock_tokens: Vec<CommitLockToken>) -> Self {
         self.lock_tokens = lock_tokens;
         self
     }
 
     /// Requests that locks be kept after the commit.
+    #[must_use]
     pub fn keep_locks(mut self) -> Self {
         self.keep_locks = true;
         self
     }
 
     /// Sets additional revision properties.
+    #[must_use]
     pub fn with_rev_props(mut self, rev_props: PropertyList) -> Self {
         self.rev_props = rev_props;
         self
