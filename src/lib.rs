@@ -42,7 +42,8 @@
 //!
 //! - Only `svn://` is supported (no `svn+ssh://`).
 //! - Built-in authentication mechanisms: `ANONYMOUS`, `PLAIN`, and `CRAM-MD5`.
-//!   With `cyrus-sasl`, the client will also try Cyrus SASL first.
+//!   With `cyrus-sasl`, the client can also use Cyrus SASL (including the
+//!   optional SASL security layer when negotiated).
 //!
 //! ## Low-level access
 //!

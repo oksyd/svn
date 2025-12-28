@@ -302,14 +302,35 @@ impl RaSvnConnection {
         let mech_words: Vec<String> = mechs.into_iter().filter_map(|m| m.as_word()).collect();
         debug!(mechs = ?mech_words, "auth mechanisms offered");
 
-        #[cfg(feature = "cyrus-sasl")]
-        match self.handle_auth_request_cyrus_sasl(&mech_words).await {
-            Ok(()) => return Ok(()),
-            Err(SvnError::AuthUnavailable) => {}
-            Err(err) => return Err(err),
-        }
+        match self.handle_auth_request_builtin(&mech_words).await {
+            Ok(()) => Ok(()),
+            Err(builtin_err) => {
+                #[cfg(feature = "cyrus-sasl")]
+                {
+                    if matches!(
+                        &builtin_err,
+                        SvnError::AuthUnavailable | SvnError::AuthFailed(_)
+                    ) {
+                        match self.handle_auth_request_cyrus_sasl(&mech_words).await {
+                            Ok(()) => Ok(()),
+                            Err(SvnError::AuthUnavailable) => Err(builtin_err),
+                            Err(err) => Err(err),
+                        }
+                    } else {
+                        Err(builtin_err)
+                    }
+                }
 
-        let mechs_to_try = self.select_mechs(&mech_words)?;
+                #[cfg(not(feature = "cyrus-sasl"))]
+                {
+                    Err(builtin_err)
+                }
+            }
+        }
+    }
+
+    async fn handle_auth_request_builtin(&mut self, mechs: &[String]) -> Result<(), SvnError> {
+        let mechs_to_try = self.select_mechs(mechs)?;
         let mut last_failure = None::<String>;
 
         for (mech, initial) in mechs_to_try {
