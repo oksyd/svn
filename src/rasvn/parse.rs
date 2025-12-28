@@ -80,7 +80,9 @@ pub(crate) fn parse_lockdesc(item: &SvnItem) -> Result<LockDesc, SvnError> {
     }
     let path = items[0]
         .as_string()
-        .ok_or_else(|| SvnError::Protocol("lockdesc path not a string".into()))?;
+        .ok_or_else(|| SvnError::Protocol("lockdesc path not a string".into()))?
+        .trim_start_matches('/')
+        .to_string();
     let token = items[1]
         .as_string()
         .ok_or_else(|| SvnError::Protocol("lockdesc token not a string".into()))?;

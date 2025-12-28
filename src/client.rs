@@ -4177,7 +4177,7 @@ mod tests {
             ]);
 
             let lockdesc = SvnItem::List(vec![
-                SvnItem::String(b"trunk/file.txt".to_vec()),
+                SvnItem::String(b"/trunk/file.txt".to_vec()),
                 SvnItem::String(b"token".to_vec()),
                 SvnItem::String(b"alice".to_vec()),
                 SvnItem::List(Vec::new()),
@@ -4726,7 +4726,7 @@ mod tests {
             ]);
 
             let lockdesc = SvnItem::List(vec![
-                SvnItem::String(b"trunk/a.txt".to_vec()),
+                SvnItem::String(b"/trunk/a.txt".to_vec()),
                 SvnItem::String(b"t0".to_vec()),
                 SvnItem::String(b"alice".to_vec()),
                 SvnItem::List(vec![SvnItem::String(b"hi".to_vec())]),

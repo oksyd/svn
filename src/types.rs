@@ -160,7 +160,7 @@ pub struct FileRev {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LockDesc {
-    /// Repository path that is locked.
+    /// Repository-relative path (no leading `/`) that is locked.
     pub path: String,
     /// Opaque lock token.
     pub token: String,
