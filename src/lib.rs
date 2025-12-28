@@ -64,6 +64,7 @@ mod editor;
 mod error;
 mod options;
 mod path;
+mod pool;
 mod rasvn;
 mod types;
 mod url;
@@ -71,6 +72,7 @@ mod url;
 pub use client::{RaSvnClient, RaSvnSession};
 pub use editor::{EditorCommand, EditorEvent, EditorEventHandler, Report, ReportCommand};
 pub use error::{ServerError, ServerErrorItem, SvnError};
+pub use pool::{PooledSession, SessionPool};
 /// Convenience alias for results returned by this crate.
 pub type Result<T> = std::result::Result<T, SvnError>;
 pub use options::{
