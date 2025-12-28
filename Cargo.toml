@@ -12,14 +12,18 @@ homepage = "https://github.com/lvillis/svn-rs"
 keywords = ["svn", "subversion"]
 categories = ["network-programming"]
 include = [
-    "Cargo.lock",
     "Cargo.toml",
     "README.md",
     "README.zh-CN.md",
     "LICENSE",
+    "CHANGELOG.md",
     "src/**",
     "tests/**",
 ]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []

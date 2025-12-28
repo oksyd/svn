@@ -50,6 +50,7 @@ pub struct RaSvnSession {
     client: RaSvnClient,
     conn: Option<RaSvnConnection>,
     server_info: Option<ServerInfo>,
+    allow_reconnect: bool,
 }
 
 impl std::fmt::Debug for RaSvnSession {
@@ -139,8 +140,35 @@ impl RaSvnClient {
             client: self.clone(),
             conn: None,
             server_info: None,
+            allow_reconnect: true,
         };
         session.reconnect().await?;
+        Ok(session)
+    }
+
+    /// Opens a session over an already connected stream.
+    ///
+    /// This is useful if you want to provide your own transport (for example a
+    /// tunnel or custom proxy). The stream must already be connected to the
+    /// same `host:port` as [`RaSvnClient::base_url`].
+    ///
+    /// Sessions created by this method do **not** auto-reconnect on I/O errors
+    /// (because the crate cannot recreate your custom transport). If the stream
+    /// is dropped, create a new session yourself.
+    pub async fn open_session_with_stream<S>(&self, stream: S) -> Result<RaSvnSession, SvnError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let mut session = RaSvnSession {
+            client: self.clone(),
+            conn: None,
+            server_info: None,
+            allow_reconnect: false,
+        };
+
+        let (conn, server_info) = self.connect_over_stream(stream).await?;
+        session.conn = Some(conn);
+        session.server_info = Some(server_info);
         Ok(session)
     }
 
@@ -547,8 +575,41 @@ impl RaSvnClient {
 
         let (read, write) = stream.into_split();
         let mut conn = RaSvnConnection::new(
-            read,
-            write,
+            Box::new(read),
+            Box::new(write),
+            RaSvnConnectionConfig {
+                username: self.username.clone(),
+                password: self.password.clone(),
+                #[cfg(feature = "cyrus-sasl")]
+                host: self.base_url.host.clone(),
+                #[cfg(feature = "cyrus-sasl")]
+                local_addrport,
+                #[cfg(feature = "cyrus-sasl")]
+                remote_addrport,
+                url: self.base_url.url.clone(),
+                ra_client: self.ra_client.clone(),
+                read_timeout: self.read_timeout,
+                write_timeout: self.write_timeout,
+            },
+        );
+        let server_info = conn.handshake().await?;
+        Ok((conn, server_info))
+    }
+
+    async fn connect_over_stream<S>(
+        &self,
+        stream: S,
+    ) -> Result<(RaSvnConnection, ServerInfo), SvnError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        #[cfg(feature = "cyrus-sasl")]
+        let (local_addrport, remote_addrport) = (None, None);
+
+        let (read, write) = tokio::io::split(stream);
+        let mut conn = RaSvnConnection::new(
+            Box::new(read),
+            Box::new(write),
             RaSvnConnectionConfig {
                 username: self.username.clone(),
                 password: self.password.clone(),
@@ -647,6 +708,11 @@ impl RaSvnSession {
 
     /// Reconnects the underlying TCP connection and performs a new handshake.
     pub async fn reconnect(&mut self) -> Result<(), SvnError> {
+        if !self.allow_reconnect {
+            return Err(SvnError::Protocol(
+                "reconnect not supported for this session".to_string(),
+            ));
+        }
         let (conn, server_info) = self.client.connect().await?;
         self.conn = Some(conn);
         self.server_info = Some(server_info);
@@ -675,7 +741,7 @@ impl RaSvnSession {
             };
             match result {
                 Ok(v) => return Ok(v),
-                Err(err) if attempt == 0 && is_retryable_error(&err) => {
+                Err(err) if attempt == 0 && self.allow_reconnect && is_retryable_error(&err) => {
                     debug!(op, error = %err, "connection lost; reconnecting and retrying");
                     self.reconnect().await?;
                     attempt += 1;
@@ -2712,8 +2778,8 @@ mod tests {
         client.read_timeout = Duration::from_secs(1);
         client.write_timeout = Duration::from_secs(1);
         let conn = RaSvnConnection::new(
-            read,
-            write,
+            Box::new(read),
+            Box::new(write),
             RaSvnConnectionConfig {
                 username: None,
                 password: None,
@@ -2735,6 +2801,7 @@ mod tests {
                 client,
                 conn: Some(conn),
                 server_info: None,
+                allow_reconnect: true,
             },
             server,
         )

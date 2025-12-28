@@ -18,13 +18,13 @@
     <img src="https://img.shields.io/docsrs/svn?logo=rust" alt="docs.rs docs">
   </a>
   <a href="https://github.com/lvillis/svn-rs/actions">
-    <img src="https://github.com/lvillis/svn-rs/actions/workflows/ci.yml/badge.svg" alt="CI status">
-  </a>
-  <a href="LICENSE">
-    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="license">
+    <img src="https://github.com/lvillis/svn-rs/actions/workflows/ci.yaml/badge.svg" alt="CI status">
   </a>
   <a href="rust-toolchain.toml">
     <img src="https://img.shields.io/badge/MSRV-1.92.0-informational" alt="MSRV 1.92.0">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="license">
   </a>
   <a href="https://crates.io/crates/svn">
     <img src="https://img.shields.io/crates/dr/svn?color=ba86eb" alt="downloads">
@@ -122,6 +122,16 @@ To enable Cyrus SASL (and the optional SASL security layer), enable the
 ```toml
 svn = { version = "0.1", features = ["cyrus-sasl"] }
 ```
+
+Notes:
+
+- With `cyrus-sasl`, this crate dynamically loads the system Cyrus SASL library
+  (`libsasl2`) at runtime. If it is not available, SASL authentication is
+  unavailable and requests may fail with `SvnError::AuthUnavailable`.
+- The SASL security layer is not TLS (no certificates); it is an optional
+  integrity/encryption layer negotiated as part of SASL, depending on the
+  mechanism and server configuration.
+- When `cyrus-sasl` is disabled (the default), the crate stays `unsafe`-free.
 
 ## Supported operations
 

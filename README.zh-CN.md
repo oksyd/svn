@@ -18,13 +18,13 @@
     <img src="https://img.shields.io/docsrs/svn?logo=rust" alt="docs.rs docs">
   </a>
   <a href="https://github.com/lvillis/svn-rs/actions">
-    <img src="https://github.com/lvillis/svn-rs/actions/workflows/ci.yml/badge.svg" alt="CI status">
-  </a>
-  <a href="LICENSE">
-    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="license">
+    <img src="https://github.com/lvillis/svn-rs/actions/workflows/ci.yaml/badge.svg" alt="CI status">
   </a>
   <a href="rust-toolchain.toml">
     <img src="https://img.shields.io/badge/MSRV-1.92.0-informational" alt="MSRV 1.92.0">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="license">
   </a>
   <a href="https://crates.io/crates/svn">
     <img src="https://img.shields.io/crates/dr/svn?color=ba86eb" alt="downloads">
@@ -118,6 +118,14 @@ async fn main() -> svn::Result<()> {
 ```toml
 svn = { version = "0.1", features = ["cyrus-sasl"] }
 ```
+
+说明：
+
+- 开启 `cyrus-sasl` 后，本库会在运行时动态加载系统的 Cyrus SASL 库（`libsasl2`）。若系统未安装，
+  则 SASL 机制不可用，相关请求可能会以 `SvnError::AuthUnavailable` 失败。
+- SASL security layer 不是 TLS（没有证书），而是 SASL 协商出的可选完整性/加密层，是否启用以及
+  具体强度取决于所选机制和服务端配置。
+- 默认未开启 `cyrus-sasl` 时，本库不会编译任何 `unsafe` 代码。
 
 ## 已支持的操作
 

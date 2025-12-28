@@ -660,8 +660,8 @@ mod tests {
 
         let (read, write) = client.into_split();
         let conn = RaSvnConnection::new(
-            read,
-            write,
+            Box::new(read),
+            Box::new(write),
             RaSvnConnectionConfig {
                 username: None,
                 password: None,

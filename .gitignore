@@ -60,7 +60,7 @@ pkg/
 node_modules/
 
 # Library crates may ignore Cargo.lock
-# Cargo.lock
+Cargo.lock
 
 .aiignore
 CONTEXT.md

@@ -1,6 +1,7 @@
 use hmac::{Hmac, Mac};
 use md5::Md5;
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::Instant;
 use tracing::debug;
@@ -91,11 +92,15 @@ pub(crate) struct RaSvnConnectionConfig {
     pub(crate) write_timeout: Duration,
 }
 
+type DynRead = Box<dyn AsyncRead + Unpin + Send>;
+type DynWrite = Box<dyn AsyncWrite + Unpin + Send>;
+
 pub(crate) struct RaSvnConnection {
-    read: tokio::net::tcp::OwnedReadHalf,
-    write: tokio::net::tcp::OwnedWriteHalf,
+    read: DynRead,
+    write: DynWrite,
     buf: Vec<u8>,
     pos: usize,
+    write_buf: Vec<u8>,
     username: Option<String>,
     password: Option<String>,
     #[cfg(feature = "cyrus-sasl")]
@@ -114,16 +119,13 @@ pub(crate) struct RaSvnConnection {
 }
 
 impl RaSvnConnection {
-    pub(crate) fn new(
-        read: tokio::net::tcp::OwnedReadHalf,
-        write: tokio::net::tcp::OwnedWriteHalf,
-        config: RaSvnConnectionConfig,
-    ) -> Self {
+    pub(crate) fn new(read: DynRead, write: DynWrite, config: RaSvnConnectionConfig) -> Self {
         Self {
             read,
             write,
             buf: Vec::new(),
             pos: 0,
+            write_buf: Vec::new(),
             username: config.username,
             password: config.password,
             #[cfg(feature = "cyrus-sasl")]
@@ -663,15 +665,18 @@ impl RaSvnConnection {
                 )));
             }
 
-            match self.write.try_write(&wire[offset..]) {
-                Ok(0) => {
+            match tokio::time::timeout(Duration::from_millis(0), self.write.write(&wire[offset..]))
+                .await
+            {
+                Ok(Ok(0)) => {
                     return Err(SvnError::Io(std::io::Error::new(
                         std::io::ErrorKind::WriteZero,
                         "write returned 0 bytes",
                     )));
                 }
-                Ok(n) => offset += n,
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                Ok(Ok(n)) => offset += n,
+                Ok(Err(err)) => return Err(SvnError::Io(err)),
+                Err(_) => {
                     if !self.data_available().await? {
                         tokio::time::sleep(Duration::from_millis(1)).await;
                         continue;
@@ -685,7 +690,6 @@ impl RaSvnConnection {
                         done = true;
                     }
                 }
-                Err(err) => return Err(SvnError::Io(err)),
             }
         }
 
@@ -694,21 +698,21 @@ impl RaSvnConnection {
     }
 
     async fn write_item(&mut self, item: &SvnItem) -> Result<(), SvnError> {
-        let mut buf = Vec::new();
-        encode_item(item, &mut buf);
-        buf.push(b'\n');
+        self.write_buf.clear();
+        encode_item(item, &mut self.write_buf);
+        self.write_buf.push(b'\n');
 
         #[cfg(feature = "cyrus-sasl")]
         if let Some(sasl) = self.sasl.as_mut() {
             let max = sasl.max_outbuf() as usize;
             let mut offset = 0usize;
-            while offset < buf.len() {
+            while offset < self.write_buf.len() {
                 let take = if max == 0 {
-                    buf.len() - offset
+                    self.write_buf.len() - offset
                 } else {
-                    (buf.len() - offset).min(max)
+                    (self.write_buf.len() - offset).min(max)
                 };
-                let chunk = &buf[offset..offset + take];
+                let chunk = &self.write_buf[offset..offset + take];
                 let encoded = sasl.encode(chunk)?;
                 tokio::time::timeout(self.write_timeout, self.write.write_all(&encoded))
                     .await
@@ -721,7 +725,7 @@ impl RaSvnConnection {
                 offset += take;
             }
         } else {
-            tokio::time::timeout(self.write_timeout, self.write.write_all(&buf))
+            tokio::time::timeout(self.write_timeout, self.write.write_all(&self.write_buf))
                 .await
                 .map_err(|_| {
                     SvnError::Io(std::io::Error::new(
@@ -733,7 +737,7 @@ impl RaSvnConnection {
 
         #[cfg(not(feature = "cyrus-sasl"))]
         {
-            tokio::time::timeout(self.write_timeout, self.write.write_all(&buf))
+            tokio::time::timeout(self.write_timeout, self.write.write_all(&self.write_buf))
                 .await
                 .map_err(|_| {
                     SvnError::Io(std::io::Error::new(
@@ -1071,27 +1075,24 @@ mod tests {
         let (server, _) = accept_task.await.unwrap().unwrap();
 
         let (read, write) = client.into_split();
-        let conn = RaSvnConnection {
-            read,
-            write,
-            buf: Vec::new(),
-            pos: 0,
-            username,
-            password,
-            #[cfg(feature = "cyrus-sasl")]
-            host: "example.com".to_string(),
-            #[cfg(feature = "cyrus-sasl")]
-            local_addrport: None,
-            #[cfg(feature = "cyrus-sasl")]
-            remote_addrport: None,
-            url: "svn://example.com:3690/repo".to_string(),
-            ra_client: "test-ra_svn".to_string(),
-            read_timeout: Duration::from_secs(1),
-            write_timeout: Duration::from_secs(1),
-            server_caps: Vec::new(),
-            #[cfg(feature = "cyrus-sasl")]
-            sasl: None,
-        };
+        let conn = RaSvnConnection::new(
+            Box::new(read),
+            Box::new(write),
+            RaSvnConnectionConfig {
+                username,
+                password,
+                #[cfg(feature = "cyrus-sasl")]
+                host: "example.com".to_string(),
+                #[cfg(feature = "cyrus-sasl")]
+                local_addrport: None,
+                #[cfg(feature = "cyrus-sasl")]
+                remote_addrport: None,
+                url: "svn://example.com:3690/repo".to_string(),
+                ra_client: "test-ra_svn".to_string(),
+                read_timeout: Duration::from_secs(1),
+                write_timeout: Duration::from_secs(1),
+            },
+        );
 
         (conn, server)
     }
