@@ -55,3 +55,10 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 [dev-dependencies]
 proptest = "1.9.0"
 tempfile = "3.24.0"
+
+[package.metadata.release]
+tag-prefix = ""
+tag-name = "{{prefix}}{{version}}"
+pre-release-commit-message = "chore: release {{crate_name}} version {{version}}"
+tag-message = "chore: release {{crate_name}} version {{version}}"
+pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}" ]
