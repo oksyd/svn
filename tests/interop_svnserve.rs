@@ -66,21 +66,18 @@ fn file_url(path: &Path) -> String {
     }
 }
 
-struct ChildGuard {
-    child: Child,
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
 struct SvnserveFixture {
     _tmp: tempfile::TempDir,
     port: u16,
-    _svnserve: ChildGuard,
+    svnserve: Child,
+    svnserve_stderr_log: std::path::PathBuf,
+}
+
+impl Drop for SvnserveFixture {
+    fn drop(&mut self) {
+        let _ = self.svnserve.kill();
+        let _ = self.svnserve.wait();
+    }
 }
 
 impl SvnserveFixture {
@@ -88,8 +85,13 @@ impl SvnserveFixture {
         format!("svn://127.0.0.1:{}/repo", self.port)
     }
 
-    async fn wait_ready(&self) {
-        for _ in 0..100 {
+    async fn wait_ready(&mut self) {
+        for _ in 0..200 {
+            if let Ok(Some(status)) = self.svnserve.try_wait() {
+                let stderr = std::fs::read_to_string(&self.svnserve_stderr_log)
+                    .unwrap_or_else(|_| "<failed to read svnserve stderr log>".to_string());
+                panic!("svnserve exited early: {status}\nstderr:\n{stderr}");
+            }
             if tokio::net::TcpStream::connect(("127.0.0.1", self.port))
                 .await
                 .is_ok()
@@ -98,7 +100,13 @@ impl SvnserveFixture {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        panic!("svnserve did not become ready on port {}", self.port);
+
+        let stderr = std::fs::read_to_string(&self.svnserve_stderr_log)
+            .unwrap_or_else(|_| "<failed to read svnserve stderr log>".to_string());
+        panic!(
+            "svnserve did not become ready on port {}\nstderr:\n{}",
+            self.port, stderr
+        );
     }
 }
 
@@ -162,7 +170,11 @@ fn start_fixture() -> SvnserveFixture {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
 
+    let svnserve_stderr_log = tmp.path().join("svnserve.stderr.log");
+    let log = std::fs::File::create(&svnserve_stderr_log).unwrap();
+    let log_err = log.try_clone().unwrap();
     let child = Command::new("svnserve")
+        .arg("-d")
         .arg("--foreground")
         .arg("-r")
         .arg(&root)
@@ -171,15 +183,16 @@ fn start_fixture() -> SvnserveFixture {
         .arg("--listen-port")
         .arg(port.to_string())
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
         .spawn()
         .unwrap();
 
     SvnserveFixture {
         _tmp: tmp,
         port,
-        _svnserve: ChildGuard { child },
+        svnserve: child,
+        svnserve_stderr_log,
     }
 }
 
@@ -225,7 +238,7 @@ fn interop_svnserve_readonly_smoke() {
     }
 
     run_async(async {
-        let fixture = start_fixture();
+        let mut fixture = start_fixture();
         fixture.wait_ready().await;
 
         let url = SvnUrl::parse(&fixture.url()).unwrap();
@@ -254,7 +267,7 @@ fn interop_svnserve_write_lock_unlock_and_commit_smoke() {
     }
 
     run_async(async {
-        let fixture = start_fixture();
+        let mut fixture = start_fixture();
         fixture.wait_ready().await;
 
         let url = SvnUrl::parse(&fixture.url()).unwrap();
