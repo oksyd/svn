@@ -291,9 +291,9 @@ fn interop_svnserve_write_lock_unlock_and_commit_smoke() {
             .await
             .unwrap();
 
-        let info = session
+        let info = match session
             .commit(
-                &CommitOptions::new("add empty file"),
+                &CommitOptions::new("set svn:mime-type"),
                 &[
                     EditorCommand::OpenRoot {
                         rev: Some(head),
@@ -305,11 +305,16 @@ fn interop_svnserve_write_lock_unlock_and_commit_smoke() {
                         child_token: "t".to_string(),
                         rev: head,
                     },
-                    EditorCommand::AddFile {
-                        path: "trunk/empty.txt".to_string(),
+                    EditorCommand::OpenFile {
+                        path: "trunk/hello.txt".to_string(),
                         dir_token: "t".to_string(),
                         file_token: "f".to_string(),
-                        copy_from: None,
+                        rev: head,
+                    },
+                    EditorCommand::ChangeFileProp {
+                        file_token: "f".to_string(),
+                        name: "svn:mime-type".to_string(),
+                        value: Some(b"text/plain".to_vec()),
                     },
                     EditorCommand::CloseFile {
                         file_token: "f".to_string(),
@@ -325,10 +330,24 @@ fn interop_svnserve_write_lock_unlock_and_commit_smoke() {
                 ],
             )
             .await
-            .unwrap();
+        {
+            Ok(info) => info,
+            Err(err) => {
+                let log = std::fs::read_to_string(&fixture.svnserve_stderr_log)
+                    .unwrap_or_else(|_| "<failed to read svnserve log>".to_string());
+                panic!("commit failed: {err}\nsvnserve log:\n{log}");
+            }
+        };
         assert_eq!(info.new_rev, head + 1);
 
-        let listing = session.list_dir("trunk", Some(info.new_rev)).await.unwrap();
-        assert!(listing.entries.iter().any(|e| e.name == "empty.txt"));
+        let props = session
+            .proplist("trunk/hello.txt", Some(info.new_rev))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            props.get("svn:mime-type").unwrap().as_slice(),
+            b"text/plain"
+        );
     });
 }
