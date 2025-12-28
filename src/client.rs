@@ -1,8 +1,10 @@
 use std::fmt::Formatter;
 use std::future::Future;
 use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
+use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tracing::debug;
@@ -197,6 +199,17 @@ impl RaSvnClient {
             .await
     }
 
+    /// Convenience wrapper for [`RaSvnSession::get_file_bytes`].
+    pub async fn get_file_bytes(
+        &self,
+        path: &str,
+        rev: u64,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, SvnError> {
+        let mut session = self.open_session().await?;
+        session.get_file_bytes(path, rev, max_bytes).await
+    }
+
     /// Convenience wrapper for [`RaSvnSession::get_file_with_options`].
     pub async fn get_file_with_options<W: tokio::io::AsyncWrite + Unpin>(
         &self,
@@ -302,6 +315,27 @@ impl RaSvnClient {
         let mut session = self.open_session().await?;
         session
             .get_file_revs(path, start_rev, end_rev, include_merged_revisions)
+            .await
+    }
+
+    /// Convenience wrapper for [`RaSvnSession::get_file_revs_with_contents`].
+    pub async fn get_file_revs_with_contents(
+        &self,
+        path: &str,
+        start_rev: Option<u64>,
+        end_rev: Option<u64>,
+        include_merged_revisions: bool,
+        max_bytes: u64,
+    ) -> Result<Vec<crate::FileRevContents>, SvnError> {
+        let mut session = self.open_session().await?;
+        session
+            .get_file_revs_with_contents(
+                path,
+                start_rev,
+                end_rev,
+                include_merged_revisions,
+                max_bytes,
+            )
             .await
     }
 
@@ -1184,6 +1218,21 @@ impl RaSvnSession {
             .bytes_written)
     }
 
+    /// Runs `get-file` and collects file contents into memory.
+    ///
+    /// This is a convenience wrapper around [`RaSvnSession::get_file`] for
+    /// callers that don't need streaming.
+    pub async fn get_file_bytes(
+        &mut self,
+        path: &str,
+        rev: u64,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, SvnError> {
+        let mut out = LimitedVecWriter::new(max_bytes);
+        let _ = self.get_file(path, rev, false, &mut out, max_bytes).await?;
+        Ok(out.into_inner())
+    }
+
     /// Like [`RaSvnSession::get_file`], but also returns additional metadata.
     pub async fn get_file_with_result<W: tokio::io::AsyncWrite + Unpin>(
         &mut self,
@@ -1726,6 +1775,61 @@ impl RaSvnSession {
             })
         })
         .await
+    }
+
+    /// Runs `get-file-revs` and returns file revisions with materialized contents.
+    ///
+    /// The server may omit text deltas for revisions where the file contents did
+    /// not change; in that case, this method reuses the last known contents.
+    ///
+    /// If a text delta cannot be applied (for example due to an unexpected base),
+    /// this method falls back to fetching the full contents via `get-file` for
+    /// that revision.
+    pub async fn get_file_revs_with_contents(
+        &mut self,
+        path: &str,
+        start_rev: Option<u64>,
+        end_rev: Option<u64>,
+        include_merged_revisions: bool,
+        max_bytes: u64,
+    ) -> Result<Vec<crate::FileRevContents>, SvnError> {
+        let file_revs = self
+            .get_file_revs(path, start_rev, end_rev, include_merged_revisions)
+            .await?;
+
+        let mut current: Option<Vec<u8>> = None;
+        let mut out = Vec::with_capacity(file_revs.len());
+
+        for file_rev in file_revs {
+            let contents = if file_rev.delta_chunks.is_empty() {
+                match current.as_ref() {
+                    Some(bytes) => bytes.clone(),
+                    None => {
+                        self.get_file_bytes(&file_rev.path, file_rev.rev, max_bytes)
+                            .await?
+                    }
+                }
+            } else {
+                let base = current.as_deref().unwrap_or(&[]);
+                let mut buf = LimitedVecWriter::new(max_bytes);
+                match crate::apply_textdelta(base, file_rev.delta_chunks.iter(), &mut buf).await {
+                    Ok(()) => buf.into_inner(),
+                    Err(err) => {
+                        debug!(
+                            "failed to apply file-revs textdelta for {}@{}: {err}; falling back to get-file",
+                            file_rev.path, file_rev.rev
+                        );
+                        self.get_file_bytes(&file_rev.path, file_rev.rev, max_bytes)
+                            .await?
+                    }
+                }
+            };
+
+            current = Some(contents.clone());
+            out.push(crate::FileRevContents { file_rev, contents });
+        }
+
+        Ok(out)
     }
 
     /// Runs `get-lock` and returns the lock for `path`, if any.
@@ -2766,6 +2870,51 @@ fn is_retryable_error(err: &SvnError) -> bool {
     }
 }
 
+struct LimitedVecWriter {
+    buf: Vec<u8>,
+    max_bytes: u64,
+}
+
+impl LimitedVecWriter {
+    fn new(max_bytes: u64) -> Self {
+        Self {
+            buf: Vec::new(),
+            max_bytes,
+        }
+    }
+
+    fn into_inner(self) -> Vec<u8> {
+        self.buf
+    }
+}
+
+impl AsyncWrite for LimitedVecWriter {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let next = (self.buf.len() as u64).saturating_add(buf.len() as u64);
+        if next > self.max_bytes {
+            return Poll::Ready(Err(std::io::Error::other(format!(
+                "buffer exceeds limit {}",
+                self.max_bytes
+            ))));
+        }
+
+        self.buf.extend_from_slice(buf);
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -2773,6 +2922,7 @@ mod tests {
     use super::*;
     use crate::rasvn::conn::RaSvnConnectionConfig;
     use crate::rasvn::encode_item;
+    use crate::svndiff::{SvndiffVersion, encode_fulltext_with_options};
     use std::future::Future;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -4259,6 +4409,100 @@ mod tests {
             assert_eq!(revs[0].rev, 2);
             assert_eq!(revs[0].rev_props.get("svn:author").unwrap(), b"alice");
             assert_eq!(revs[0].delta_chunks, vec![b"delta".to_vec()]);
+
+            server_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn get_file_revs_with_contents_applies_deltas_and_reuses_contents_on_empty_delta() {
+        run_async(async {
+            let (mut session, mut server) = connected_session().await;
+
+            let delta1 =
+                encode_fulltext_with_options(SvndiffVersion::V0, b"hello\n", 0, 64 * 1024).unwrap();
+            let delta3 =
+                encode_fulltext_with_options(SvndiffVersion::V0, b"world\n", 0, 64 * 1024).unwrap();
+
+            let expected_get_file_revs = SvnItem::List(vec![
+                SvnItem::Word("get-file-revs".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::String(b"trunk/file.txt".to_vec()),
+                    SvnItem::List(vec![SvnItem::Number(1)]),
+                    SvnItem::List(vec![SvnItem::Number(3)]),
+                    SvnItem::Bool(false),
+                ]),
+            ]);
+
+            let cmd_success = SvnItem::List(vec![
+                SvnItem::Word("success".to_string()),
+                SvnItem::List(Vec::new()),
+            ]);
+
+            let server_task = tokio::spawn(async move {
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_line(&expected_get_file_revs)
+                );
+                write_item_line(&mut server, &auth_request("realm")).await;
+
+                // rev 1: fulltext delta ("hello\n")
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::String(b"/trunk/file.txt".to_vec()),
+                        SvnItem::Number(1),
+                        SvnItem::List(Vec::new()),
+                        SvnItem::List(Vec::new()),
+                    ]),
+                )
+                .await;
+                write_item_line(&mut server, &SvnItem::String(delta1)).await;
+                write_item_line(&mut server, &SvnItem::String(Vec::new())).await;
+
+                // rev 2: props-only change (no delta)
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::String(b"/trunk/file.txt".to_vec()),
+                        SvnItem::Number(2),
+                        SvnItem::List(Vec::new()),
+                        SvnItem::List(Vec::new()),
+                    ]),
+                )
+                .await;
+                write_item_line(&mut server, &SvnItem::String(Vec::new())).await;
+
+                // rev 3: fulltext delta ("world\n")
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::String(b"/trunk/file.txt".to_vec()),
+                        SvnItem::Number(3),
+                        SvnItem::List(Vec::new()),
+                        SvnItem::List(Vec::new()),
+                    ]),
+                )
+                .await;
+                write_item_line(&mut server, &SvnItem::String(delta3)).await;
+                write_item_line(&mut server, &SvnItem::String(Vec::new())).await;
+
+                write_item_line(&mut server, &SvnItem::Word("done".to_string())).await;
+                write_item_line(&mut server, &cmd_success).await;
+            });
+
+            let revs = session
+                .get_file_revs_with_contents("trunk/file.txt", Some(1), Some(3), false, 1024)
+                .await
+                .unwrap();
+            assert_eq!(revs.len(), 3);
+            assert_eq!(revs[0].file_rev.path, "trunk/file.txt");
+            assert_eq!(revs[0].file_rev.rev, 1);
+            assert_eq!(revs[0].contents, b"hello\n");
+            assert_eq!(revs[1].file_rev.rev, 2);
+            assert_eq!(revs[1].contents, b"hello\n");
+            assert_eq!(revs[2].file_rev.rev, 3);
+            assert_eq!(revs[2].contents, b"world\n");
 
             server_task.await.unwrap();
         });

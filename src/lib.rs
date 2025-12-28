@@ -91,8 +91,8 @@ pub mod raw {
 }
 pub use types::{
     Capability, ChangedPath, CommitInfo, Depth, DirEntry, DirListing, DirentField, FileRev,
-    GetFileResult, InheritedProps, LocationEntry, LocationSegment, LockDesc, LogEntry,
-    MergeInfoCatalog, MergeInfoInheritance, NodeKind, PropDelta, PropertyList, RepositoryInfo,
-    ServerInfo, StatEntry,
+    FileRevContents, GetFileResult, InheritedProps, LocationEntry, LocationSegment, LockDesc,
+    LogEntry, MergeInfoCatalog, MergeInfoInheritance, NodeKind, PropDelta, PropertyList,
+    RepositoryInfo, ServerInfo, StatEntry,
 };
 pub use url::SvnUrl;

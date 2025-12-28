@@ -156,6 +156,19 @@ pub struct FileRev {
     pub delta_chunks: Vec<Vec<u8>>,
 }
 
+/// A [`FileRev`] entry with materialized file contents.
+///
+/// This is useful when you want a `get-file-revs` result that is directly
+/// consumable without manually applying svndiff chunks.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileRevContents {
+    /// The file-revision metadata and raw delta chunks.
+    pub file_rev: FileRev,
+    /// The full file contents for this revision.
+    pub contents: Vec<u8>,
+}
+
 /// A lock description as returned by `get-lock(s)` or `lock`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
