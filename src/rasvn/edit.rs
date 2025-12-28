@@ -94,9 +94,10 @@ pub(crate) async fn send_editor_command(
             dir_token,
         } => {
             let path = validate_rel_path(path)?;
+            let rev_tuple = SvnItem::List(vec![SvnItem::Number(*rev)]);
             let params = SvnItem::List(vec![
                 SvnItem::String(path.as_bytes().to_vec()),
-                SvnItem::Number(*rev),
+                rev_tuple,
                 SvnItem::String(dir_token.as_bytes().to_vec()),
             ]);
             conn.send_command("delete-entry", params).await
@@ -133,11 +134,12 @@ pub(crate) async fn send_editor_command(
             rev,
         } => {
             let path = validate_rel_path(path)?;
+            let rev_tuple = SvnItem::List(vec![SvnItem::Number(*rev)]);
             let params = SvnItem::List(vec![
                 SvnItem::String(path.as_bytes().to_vec()),
                 SvnItem::String(parent_token.as_bytes().to_vec()),
                 SvnItem::String(child_token.as_bytes().to_vec()),
-                SvnItem::Number(*rev),
+                rev_tuple,
             ]);
             conn.send_command("open-dir", params).await
         }
@@ -201,11 +203,12 @@ pub(crate) async fn send_editor_command(
             rev,
         } => {
             let path = validate_rel_path(path)?;
+            let rev_tuple = SvnItem::List(vec![SvnItem::Number(*rev)]);
             let params = SvnItem::List(vec![
                 SvnItem::String(path.as_bytes().to_vec()),
                 SvnItem::String(dir_token.as_bytes().to_vec()),
                 SvnItem::String(file_token.as_bytes().to_vec()),
-                SvnItem::Number(*rev),
+                rev_tuple,
             ]);
             conn.send_command("open-file", params).await
         }
@@ -420,11 +423,13 @@ fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<EditorEvent, SvnE
             if params.len() < 3 {
                 return Err(SvnError::Protocol("delete-entry params too short".into()));
             }
+            let rev = opt_tuple_u64(&params[1])
+                .ok_or_else(|| SvnError::Protocol("delete-entry missing rev".into()))?;
             Ok(EditorEvent::DeleteEntry {
                 path: req_string(&params[0], "delete-entry path")?
                     .trim_start_matches('/')
                     .to_string(),
-                rev: req_u64(&params[1], "delete-entry rev")?,
+                rev,
                 dir_token: req_string(&params[2], "delete-entry dir token")?,
             })
         }
@@ -445,13 +450,15 @@ fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<EditorEvent, SvnE
             if params.len() < 4 {
                 return Err(SvnError::Protocol("open-dir params too short".into()));
             }
+            let rev = opt_tuple_u64(&params[3])
+                .ok_or_else(|| SvnError::Protocol("open-dir missing rev".into()))?;
             Ok(EditorEvent::OpenDir {
                 path: req_string(&params[0], "open-dir path")?
                     .trim_start_matches('/')
                     .to_string(),
                 parent_token: req_string(&params[1], "open-dir parent token")?,
                 child_token: req_string(&params[2], "open-dir child token")?,
-                rev: req_u64(&params[3], "open-dir rev")?,
+                rev,
             })
         }
         "change-dir-prop" => {
@@ -501,13 +508,15 @@ fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<EditorEvent, SvnE
             if params.len() < 4 {
                 return Err(SvnError::Protocol("open-file params too short".into()));
             }
+            let rev = opt_tuple_u64(&params[3])
+                .ok_or_else(|| SvnError::Protocol("open-file missing rev".into()))?;
             Ok(EditorEvent::OpenFile {
                 path: req_string(&params[0], "open-file path")?
                     .trim_start_matches('/')
                     .to_string(),
                 dir_token: req_string(&params[1], "open-file dir token")?,
                 file_token: req_string(&params[2], "open-file file token")?,
-                rev: req_u64(&params[3], "open-file rev")?,
+                rev,
             })
         }
         "apply-textdelta" => {
@@ -587,11 +596,6 @@ fn req_string(item: &SvnItem, ctx: &str) -> Result<String, SvnError> {
 fn req_bytes(item: &SvnItem, ctx: &str) -> Result<Vec<u8>, SvnError> {
     item.as_bytes_string()
         .ok_or_else(|| SvnError::Protocol(format!("{ctx} not a string")))
-}
-
-fn req_u64(item: &SvnItem, ctx: &str) -> Result<u64, SvnError> {
-    item.as_u64()
-        .ok_or_else(|| SvnError::Protocol(format!("{ctx} not a number")))
 }
 
 fn opt_tuple_u64(item: &SvnItem) -> Option<u64> {
@@ -756,6 +760,68 @@ mod tests {
             };
             let err = send_report(&mut conn, &report).await.unwrap_err();
             assert!(matches!(err, SvnError::Protocol(_)));
+        });
+    }
+
+    #[test]
+    fn send_editor_command_encodes_revision_as_optional_tuple() {
+        run_async(async {
+            let (mut conn, mut server) = connected_conn().await;
+
+            let cmd = EditorCommand::DeleteEntry {
+                path: "trunk/old.txt".to_string(),
+                rev: 5,
+                dir_token: "d".to_string(),
+            };
+            send_editor_command(&mut conn, &cmd).await.unwrap();
+
+            let expected = SvnItem::List(vec![
+                SvnItem::Word("delete-entry".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::String(b"trunk/old.txt".to_vec()),
+                    SvnItem::List(vec![SvnItem::Number(5)]),
+                    SvnItem::String(b"d".to_vec()),
+                ]),
+            ]);
+            assert_eq!(read_line(&mut server).await, encode_line(&expected));
+
+            let cmd = EditorCommand::OpenDir {
+                path: "trunk".to_string(),
+                parent_token: "r".to_string(),
+                child_token: "t".to_string(),
+                rev: 5,
+            };
+            send_editor_command(&mut conn, &cmd).await.unwrap();
+
+            let expected = SvnItem::List(vec![
+                SvnItem::Word("open-dir".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::String(b"trunk".to_vec()),
+                    SvnItem::String(b"r".to_vec()),
+                    SvnItem::String(b"t".to_vec()),
+                    SvnItem::List(vec![SvnItem::Number(5)]),
+                ]),
+            ]);
+            assert_eq!(read_line(&mut server).await, encode_line(&expected));
+
+            let cmd = EditorCommand::OpenFile {
+                path: "trunk/file.txt".to_string(),
+                dir_token: "t".to_string(),
+                file_token: "f".to_string(),
+                rev: 5,
+            };
+            send_editor_command(&mut conn, &cmd).await.unwrap();
+
+            let expected = SvnItem::List(vec![
+                SvnItem::Word("open-file".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::String(b"trunk/file.txt".to_vec()),
+                    SvnItem::String(b"t".to_vec()),
+                    SvnItem::String(b"f".to_vec()),
+                    SvnItem::List(vec![SvnItem::Number(5)]),
+                ]),
+            ]);
+            assert_eq!(read_line(&mut server).await, encode_line(&expected));
         });
     }
 
