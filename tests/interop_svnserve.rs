@@ -12,7 +12,10 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use svn::{CommitOptions, EditorCommand, LockOptions, RaSvnClient, SvnUrl, UnlockOptions};
+use svn::{
+    CommitBuilder, CommitOptions, EditorCommand, LockOptions, RaSvnClient, SvnUrl, SvndiffMode,
+    UnlockOptions,
+};
 
 fn run_async<T>(f: impl std::future::Future<Output = T>) -> T {
     tokio::runtime::Builder::new_current_thread()
@@ -349,5 +352,29 @@ fn interop_svnserve_write_lock_unlock_and_commit_smoke() {
             props.get("svn:mime-type").unwrap().as_slice(),
             b"text/plain"
         );
+
+        let builder = CommitBuilder::new()
+            .with_base_rev(info.new_rev)
+            .with_svndiff(SvndiffMode::Auto)
+            .put_file("trunk/hello.txt", b"hello from svn-rs\n".to_vec());
+
+        let info = session
+            .commit_with_builder(&CommitOptions::new("edit file contents"), &builder)
+            .await
+            .unwrap();
+        assert_eq!(info.new_rev, head + 2);
+
+        let mut out = VecWriter::new();
+        session
+            .get_file(
+                "trunk/hello.txt",
+                info.new_rev,
+                false,
+                &mut out,
+                1024 * 1024,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.buf, b"hello from svn-rs\n");
     });
 }
