@@ -1,8 +1,11 @@
 use crate::SvnError;
 
-pub(crate) fn validate_rel_path(path: &str) -> Result<String, SvnError> {
+fn validate_rel_path_slice(path: &str, allow_empty: bool) -> Result<&str, SvnError> {
     let trimmed = path.trim().trim_start_matches('/');
     if trimmed.is_empty() {
+        if allow_empty {
+            return Ok("");
+        }
         return Err(SvnError::InvalidPath("empty path".into()));
     }
     let path_ref = std::path::Path::new(trimmed);
@@ -13,23 +16,19 @@ pub(crate) fn validate_rel_path(path: &str) -> Result<String, SvnError> {
     {
         return Err(SvnError::InvalidPath("unsafe path".into()));
     }
-    Ok(trimmed.to_string())
+    Ok(trimmed)
+}
+
+pub(crate) fn validate_rel_path(path: &str) -> Result<String, SvnError> {
+    Ok(validate_rel_path_slice(path, false)?.to_string())
 }
 
 pub(crate) fn validate_rel_dir_path(path: &str) -> Result<String, SvnError> {
-    let trimmed = path.trim().trim_start_matches('/');
-    if trimmed.is_empty() {
-        return Ok(String::new());
-    }
-    let path_ref = std::path::Path::new(trimmed);
-    if path_ref.is_absolute()
-        || path_ref
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(SvnError::InvalidPath("unsafe path".into()));
-    }
-    Ok(trimmed.to_string())
+    Ok(validate_rel_path_slice(path, true)?.to_string())
+}
+
+pub(crate) fn validate_rel_path_ref(path: &str) -> Result<&str, SvnError> {
+    validate_rel_path_slice(path, false)
 }
 
 #[cfg(test)]

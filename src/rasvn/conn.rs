@@ -13,6 +13,7 @@ use super::encode_item;
 use super::parse::{parse_repos_info, parse_server_error};
 #[cfg(feature = "cyrus-sasl")]
 use super::sasl::{CyrusSasl, SASL_CONTINUE, base64_decode, base64_encode};
+use super::wire::encode_command_item;
 
 type AuthMechanismChoice = (String, Option<Vec<u8>>);
 type AuthMechanismChoices = Vec<AuthMechanismChoice>;
@@ -247,9 +248,14 @@ impl RaSvnConnection {
         command: &str,
         params: SvnItem,
     ) -> Result<(), SvnError> {
-        let item = SvnItem::List(vec![SvnItem::Word(command.to_string()), params]);
-        self.write_item(&item).await?;
-        Ok(())
+        self.write_buf.clear();
+        encode_command_item(command, &params, &mut self.write_buf);
+        self.write_buf.push(b'\n');
+
+        let buf = std::mem::take(&mut self.write_buf);
+        let result = self.write_wire_bytes(&buf).await;
+        self.write_buf = buf;
+        result
     }
 
     pub(crate) async fn handle_auth_request_initial(&mut self) -> Result<(), SvnError> {
@@ -697,22 +703,18 @@ impl RaSvnConnection {
         Ok(done)
     }
 
-    async fn write_item(&mut self, item: &SvnItem) -> Result<(), SvnError> {
-        self.write_buf.clear();
-        encode_item(item, &mut self.write_buf);
-        self.write_buf.push(b'\n');
-
+    pub(crate) async fn write_wire_bytes(&mut self, cleartext: &[u8]) -> Result<(), SvnError> {
         #[cfg(feature = "cyrus-sasl")]
         if let Some(sasl) = self.sasl.as_mut() {
             let max = sasl.max_outbuf() as usize;
             let mut offset = 0usize;
-            while offset < self.write_buf.len() {
+            while offset < cleartext.len() {
                 let take = if max == 0 {
-                    self.write_buf.len() - offset
+                    cleartext.len() - offset
                 } else {
-                    (self.write_buf.len() - offset).min(max)
+                    (cleartext.len() - offset).min(max)
                 };
-                let chunk = &self.write_buf[offset..offset + take];
+                let chunk = &cleartext[offset..offset + take];
                 let encoded = sasl.encode(chunk)?;
                 tokio::time::timeout(self.write_timeout, self.write.write_all(&encoded))
                     .await
@@ -725,7 +727,7 @@ impl RaSvnConnection {
                 offset += take;
             }
         } else {
-            tokio::time::timeout(self.write_timeout, self.write.write_all(&self.write_buf))
+            tokio::time::timeout(self.write_timeout, self.write.write_all(cleartext))
                 .await
                 .map_err(|_| {
                     SvnError::Io(std::io::Error::new(
@@ -737,7 +739,7 @@ impl RaSvnConnection {
 
         #[cfg(not(feature = "cyrus-sasl"))]
         {
-            tokio::time::timeout(self.write_timeout, self.write.write_all(&self.write_buf))
+            tokio::time::timeout(self.write_timeout, self.write.write_all(cleartext))
                 .await
                 .map_err(|_| {
                     SvnError::Io(std::io::Error::new(
@@ -746,8 +748,20 @@ impl RaSvnConnection {
                     ))
                 })??;
         }
+
         self.write.flush().await?;
         Ok(())
+    }
+
+    async fn write_item(&mut self, item: &SvnItem) -> Result<(), SvnError> {
+        self.write_buf.clear();
+        encode_item(item, &mut self.write_buf);
+        self.write_buf.push(b'\n');
+
+        let buf = std::mem::take(&mut self.write_buf);
+        let result = self.write_wire_bytes(&buf).await;
+        self.write_buf = buf;
+        result
     }
 
     pub(crate) async fn read_command_response(&mut self) -> Result<CommandResponse, SvnError> {
@@ -803,11 +817,13 @@ impl RaSvnConnection {
             return Ok(true);
         }
         if self.pos > 0 {
-            self.buf.drain(0..self.pos);
+            let len = self.buf.len();
+            self.buf.copy_within(self.pos..len, 0);
+            self.buf.truncate(len - self.pos);
             self.pos = 0;
         }
 
-        let mut temp = [0u8; 4096];
+        let mut temp = [0u8; 16384];
         match tokio::time::timeout(Duration::from_millis(0), self.read.read(&mut temp)).await {
             Ok(Ok(n)) => {
                 if n == 0 {
@@ -834,7 +850,9 @@ impl RaSvnConnection {
                     Ok(true)
                 } else {
                     if self.pos > 0 {
-                        self.buf.drain(0..self.pos);
+                        let len = self.buf.len();
+                        self.buf.copy_within(self.pos..len, 0);
+                        self.buf.truncate(len - self.pos);
                         self.pos = 0;
                     }
                     Ok(false)
@@ -939,10 +957,12 @@ impl RaSvnConnection {
 
     async fn fill(&mut self) -> Result<(), SvnError> {
         if self.pos > 0 {
-            self.buf.drain(0..self.pos);
+            let len = self.buf.len();
+            self.buf.copy_within(self.pos..len, 0);
+            self.buf.truncate(len - self.pos);
             self.pos = 0;
         }
-        let mut temp = [0u8; 4096];
+        let mut temp = [0u8; 16384];
 
         #[cfg(feature = "cyrus-sasl")]
         {

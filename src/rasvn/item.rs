@@ -1,5 +1,7 @@
 use std::fmt::{Display, Formatter};
 
+use super::wire::WireEncoder;
+
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 /// A raw `ra_svn` wire protocol item.
@@ -102,34 +104,22 @@ impl Display for SvnItem {
 }
 
 pub(crate) fn encode_item(item: &SvnItem, out: &mut Vec<u8>) {
+    let mut enc = WireEncoder::new(out);
+    encode_item_with(&mut enc, item);
+}
+
+fn encode_item_with(enc: &mut WireEncoder<'_>, item: &SvnItem) {
     match item {
-        SvnItem::Word(w) => {
-            out.extend_from_slice(w.as_bytes());
-            out.push(b' ');
-        }
-        SvnItem::Number(n) => {
-            out.extend_from_slice(n.to_string().as_bytes());
-            out.push(b' ');
-        }
-        SvnItem::Bool(b) => {
-            if *b {
-                out.extend_from_slice(b"true ");
-            } else {
-                out.extend_from_slice(b"false ");
-            }
-        }
-        SvnItem::String(s) => {
-            out.extend_from_slice(s.len().to_string().as_bytes());
-            out.push(b':');
-            out.extend_from_slice(s);
-            out.push(b' ');
-        }
+        SvnItem::Word(w) => enc.word(w),
+        SvnItem::Number(n) => enc.number(*n),
+        SvnItem::Bool(b) => enc.bool(*b),
+        SvnItem::String(s) => enc.string_bytes(s),
         SvnItem::List(items) => {
-            out.extend_from_slice(b"( ");
+            enc.list_start();
             for item in items {
-                encode_item(item, out);
+                encode_item_with(enc, item);
             }
-            out.extend_from_slice(b") ");
+            enc.list_end();
         }
     }
 }

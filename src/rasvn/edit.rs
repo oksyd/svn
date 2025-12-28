@@ -1,72 +1,26 @@
-use crate::path::validate_rel_path;
+use crate::path::validate_rel_path_ref;
 use crate::rasvn::parse::{parse_proplist, parse_server_error};
 use crate::raw::SvnItem;
 use crate::{EditorCommand, EditorEvent, EditorEventHandler, Report, ReportCommand, SvnError};
 
 use super::conn::RaSvnConnection;
+use super::wire::WireEncoder;
 
 pub(crate) async fn send_report(
     conn: &mut RaSvnConnection,
     report: &Report,
 ) -> Result<(), SvnError> {
+    const MAX_BATCH_BYTES: usize = 64 * 1024;
+
+    let mut buf = Vec::new();
     for command in &report.commands {
-        match command {
-            ReportCommand::SetPath {
-                path,
-                rev,
-                start_empty,
-                lock_token,
-                depth,
-            } => {
-                let lock_tuple = match lock_token {
-                    Some(token) => SvnItem::List(vec![SvnItem::String(token.as_bytes().to_vec())]),
-                    None => SvnItem::List(Vec::new()),
-                };
-                let params = SvnItem::List(vec![
-                    SvnItem::String(path.as_bytes().to_vec()),
-                    SvnItem::Number(*rev),
-                    SvnItem::Bool(*start_empty),
-                    lock_tuple,
-                    SvnItem::Word(depth.as_word().to_string()),
-                ]);
-                conn.send_command("set-path", params).await?;
-            }
-            ReportCommand::DeletePath { path } => {
-                let params = SvnItem::List(vec![SvnItem::String(path.as_bytes().to_vec())]);
-                conn.send_command("delete-path", params).await?;
-            }
-            ReportCommand::LinkPath {
-                path,
-                url,
-                rev,
-                start_empty,
-                lock_token,
-                depth,
-            } => {
-                let lock_tuple = match lock_token {
-                    Some(token) => SvnItem::List(vec![SvnItem::String(token.as_bytes().to_vec())]),
-                    None => SvnItem::List(Vec::new()),
-                };
-                let params = SvnItem::List(vec![
-                    SvnItem::String(path.as_bytes().to_vec()),
-                    SvnItem::String(url.as_bytes().to_vec()),
-                    SvnItem::Number(*rev),
-                    SvnItem::Bool(*start_empty),
-                    lock_tuple,
-                    SvnItem::Word(depth.as_word().to_string()),
-                ]);
-                conn.send_command("link-path", params).await?;
-            }
-            ReportCommand::FinishReport => {
-                conn.send_command("finish-report", SvnItem::List(Vec::new()))
-                    .await?;
-                return Ok(());
-            }
-            ReportCommand::AbortReport => {
-                conn.send_command("abort-report", SvnItem::List(Vec::new()))
-                    .await?;
-                return Ok(());
-            }
+        let done = encode_report_command(command, &mut buf)?;
+        if buf.len() >= MAX_BATCH_BYTES || done {
+            conn.write_wire_bytes(&buf).await?;
+            buf.clear();
+        }
+        if done {
+            return Ok(());
         }
     }
 
@@ -75,32 +29,128 @@ pub(crate) async fn send_report(
     ))
 }
 
+fn encode_report_command(cmd: &ReportCommand, out: &mut Vec<u8>) -> Result<bool, SvnError> {
+    let mut enc = WireEncoder::new(out);
+    enc.list_start();
+    match cmd {
+        ReportCommand::SetPath {
+            path,
+            rev,
+            start_empty,
+            lock_token,
+            depth,
+        } => {
+            enc.word("set-path");
+            enc.list_start();
+            enc.string_str(path);
+            enc.number(*rev);
+            enc.bool(*start_empty);
+            enc.list_start();
+            if let Some(token) = lock_token {
+                enc.string_str(token);
+            }
+            enc.list_end();
+            enc.word(depth.as_word());
+            enc.list_end();
+            enc.list_end();
+            enc.newline();
+            Ok(false)
+        }
+        ReportCommand::DeletePath { path } => {
+            enc.word("delete-path");
+            enc.list_start();
+            enc.string_str(path);
+            enc.list_end();
+            enc.list_end();
+            enc.newline();
+            Ok(false)
+        }
+        ReportCommand::LinkPath {
+            path,
+            url,
+            rev,
+            start_empty,
+            lock_token,
+            depth,
+        } => {
+            enc.word("link-path");
+            enc.list_start();
+            enc.string_str(path);
+            enc.string_str(url);
+            enc.number(*rev);
+            enc.bool(*start_empty);
+            enc.list_start();
+            if let Some(token) = lock_token {
+                enc.string_str(token);
+            }
+            enc.list_end();
+            enc.word(depth.as_word());
+            enc.list_end();
+            enc.list_end();
+            enc.newline();
+            Ok(false)
+        }
+        ReportCommand::FinishReport => {
+            enc.word("finish-report");
+            enc.list_start();
+            enc.list_end();
+            enc.list_end();
+            enc.newline();
+            Ok(true)
+        }
+        ReportCommand::AbortReport => {
+            enc.word("abort-report");
+            enc.list_start();
+            enc.list_end();
+            enc.list_end();
+            enc.newline();
+            Ok(true)
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) async fn send_editor_command(
     conn: &mut RaSvnConnection,
     command: &EditorCommand,
 ) -> Result<(), SvnError> {
-    match command {
+    let mut buf = Vec::new();
+    encode_editor_command(command, &mut buf)?;
+    conn.write_wire_bytes(&buf).await
+}
+
+pub(crate) fn encode_editor_command(
+    cmd: &EditorCommand,
+    out: &mut Vec<u8>,
+) -> Result<(), SvnError> {
+    let mut enc = WireEncoder::new(out);
+    enc.list_start();
+    match cmd {
         EditorCommand::OpenRoot { rev, token } => {
-            let rev_tuple = match rev {
-                Some(rev) => SvnItem::List(vec![SvnItem::Number(*rev)]),
-                None => SvnItem::List(Vec::new()),
-            };
-            let params = SvnItem::List(vec![rev_tuple, SvnItem::String(token.as_bytes().to_vec())]);
-            conn.send_command("open-root", params).await
+            enc.word("open-root");
+            enc.list_start();
+            enc.list_start();
+            if let Some(rev) = rev {
+                enc.number(*rev);
+            }
+            enc.list_end();
+            enc.string_str(token);
+            enc.list_end();
         }
         EditorCommand::DeleteEntry {
             path,
             rev,
             dir_token,
         } => {
-            let path = validate_rel_path(path)?;
-            let rev_tuple = SvnItem::List(vec![SvnItem::Number(*rev)]);
-            let params = SvnItem::List(vec![
-                SvnItem::String(path.as_bytes().to_vec()),
-                rev_tuple,
-                SvnItem::String(dir_token.as_bytes().to_vec()),
-            ]);
-            conn.send_command("delete-entry", params).await
+            let path = validate_rel_path_ref(path)?;
+            enc.word("delete-entry");
+            enc.list_start();
+            enc.string_str(path);
+            enc.list_start();
+            enc.number(*rev);
+            enc.list_end();
+            enc.string_str(dir_token);
+            enc.list_end();
         }
         EditorCommand::AddDir {
             path,
@@ -108,24 +158,20 @@ pub(crate) async fn send_editor_command(
             child_token,
             copy_from,
         } => {
-            let path = validate_rel_path(path)?;
-            let copy_tuple = match copy_from {
-                Some((copy_path, copy_rev)) => {
-                    let copy_path = validate_rel_path(copy_path)?;
-                    SvnItem::List(vec![
-                        SvnItem::String(copy_path.as_bytes().to_vec()),
-                        SvnItem::Number(*copy_rev),
-                    ])
-                }
-                None => SvnItem::List(Vec::new()),
-            };
-            let params = SvnItem::List(vec![
-                SvnItem::String(path.as_bytes().to_vec()),
-                SvnItem::String(parent_token.as_bytes().to_vec()),
-                SvnItem::String(child_token.as_bytes().to_vec()),
-                copy_tuple,
-            ]);
-            conn.send_command("add-dir", params).await
+            let path = validate_rel_path_ref(path)?;
+            enc.word("add-dir");
+            enc.list_start();
+            enc.string_str(path);
+            enc.string_str(parent_token);
+            enc.string_str(child_token);
+            enc.list_start();
+            if let Some((copy_path, copy_rev)) = copy_from {
+                let copy_path = validate_rel_path_ref(copy_path)?;
+                enc.string_str(copy_path);
+                enc.number(*copy_rev);
+            }
+            enc.list_end();
+            enc.list_end();
         }
         EditorCommand::OpenDir {
             path,
@@ -133,43 +179,46 @@ pub(crate) async fn send_editor_command(
             child_token,
             rev,
         } => {
-            let path = validate_rel_path(path)?;
-            let rev_tuple = SvnItem::List(vec![SvnItem::Number(*rev)]);
-            let params = SvnItem::List(vec![
-                SvnItem::String(path.as_bytes().to_vec()),
-                SvnItem::String(parent_token.as_bytes().to_vec()),
-                SvnItem::String(child_token.as_bytes().to_vec()),
-                rev_tuple,
-            ]);
-            conn.send_command("open-dir", params).await
+            let path = validate_rel_path_ref(path)?;
+            enc.word("open-dir");
+            enc.list_start();
+            enc.string_str(path);
+            enc.string_str(parent_token);
+            enc.string_str(child_token);
+            enc.list_start();
+            enc.number(*rev);
+            enc.list_end();
+            enc.list_end();
         }
         EditorCommand::ChangeDirProp {
             dir_token,
             name,
             value,
         } => {
-            let value_tuple = match value {
-                Some(value) => SvnItem::List(vec![SvnItem::String(value.clone())]),
-                None => SvnItem::List(Vec::new()),
-            };
-            let params = SvnItem::List(vec![
-                SvnItem::String(dir_token.as_bytes().to_vec()),
-                SvnItem::String(name.as_bytes().to_vec()),
-                value_tuple,
-            ]);
-            conn.send_command("change-dir-prop", params).await
+            enc.word("change-dir-prop");
+            enc.list_start();
+            enc.string_str(dir_token);
+            enc.string_str(name);
+            enc.list_start();
+            if let Some(value) = value {
+                enc.string_bytes(value);
+            }
+            enc.list_end();
+            enc.list_end();
         }
         EditorCommand::CloseDir { dir_token } => {
-            let params = SvnItem::List(vec![SvnItem::String(dir_token.as_bytes().to_vec())]);
-            conn.send_command("close-dir", params).await
+            enc.word("close-dir");
+            enc.list_start();
+            enc.string_str(dir_token);
+            enc.list_end();
         }
         EditorCommand::AbsentDir { path, parent_token } => {
-            let path = validate_rel_path(path)?;
-            let params = SvnItem::List(vec![
-                SvnItem::String(path.as_bytes().to_vec()),
-                SvnItem::String(parent_token.as_bytes().to_vec()),
-            ]);
-            conn.send_command("absent-dir", params).await
+            let path = validate_rel_path_ref(path)?;
+            enc.word("absent-dir");
+            enc.list_start();
+            enc.string_str(path);
+            enc.string_str(parent_token);
+            enc.list_end();
         }
         EditorCommand::AddFile {
             path,
@@ -177,24 +226,20 @@ pub(crate) async fn send_editor_command(
             file_token,
             copy_from,
         } => {
-            let path = validate_rel_path(path)?;
-            let copy_tuple = match copy_from {
-                Some((copy_path, copy_rev)) => {
-                    let copy_path = validate_rel_path(copy_path)?;
-                    SvnItem::List(vec![
-                        SvnItem::String(copy_path.as_bytes().to_vec()),
-                        SvnItem::Number(*copy_rev),
-                    ])
-                }
-                None => SvnItem::List(Vec::new()),
-            };
-            let params = SvnItem::List(vec![
-                SvnItem::String(path.as_bytes().to_vec()),
-                SvnItem::String(dir_token.as_bytes().to_vec()),
-                SvnItem::String(file_token.as_bytes().to_vec()),
-                copy_tuple,
-            ]);
-            conn.send_command("add-file", params).await
+            let path = validate_rel_path_ref(path)?;
+            enc.word("add-file");
+            enc.list_start();
+            enc.string_str(path);
+            enc.string_str(dir_token);
+            enc.string_str(file_token);
+            enc.list_start();
+            if let Some((copy_path, copy_rev)) = copy_from {
+                let copy_path = validate_rel_path_ref(copy_path)?;
+                enc.string_str(copy_path);
+                enc.number(*copy_rev);
+            }
+            enc.list_end();
+            enc.list_end();
         }
         EditorCommand::OpenFile {
             path,
@@ -202,92 +247,96 @@ pub(crate) async fn send_editor_command(
             file_token,
             rev,
         } => {
-            let path = validate_rel_path(path)?;
-            let rev_tuple = SvnItem::List(vec![SvnItem::Number(*rev)]);
-            let params = SvnItem::List(vec![
-                SvnItem::String(path.as_bytes().to_vec()),
-                SvnItem::String(dir_token.as_bytes().to_vec()),
-                SvnItem::String(file_token.as_bytes().to_vec()),
-                rev_tuple,
-            ]);
-            conn.send_command("open-file", params).await
+            let path = validate_rel_path_ref(path)?;
+            enc.word("open-file");
+            enc.list_start();
+            enc.string_str(path);
+            enc.string_str(dir_token);
+            enc.string_str(file_token);
+            enc.list_start();
+            enc.number(*rev);
+            enc.list_end();
+            enc.list_end();
         }
         EditorCommand::ApplyTextDelta {
             file_token,
             base_checksum,
         } => {
-            let base_tuple = match base_checksum {
-                Some(checksum) => {
-                    SvnItem::List(vec![SvnItem::String(checksum.as_bytes().to_vec())])
-                }
-                None => SvnItem::List(Vec::new()),
-            };
-            let params = SvnItem::List(vec![
-                SvnItem::String(file_token.as_bytes().to_vec()),
-                base_tuple,
-            ]);
-            conn.send_command("apply-textdelta", params).await
+            enc.word("apply-textdelta");
+            enc.list_start();
+            enc.string_str(file_token);
+            enc.list_start();
+            if let Some(checksum) = base_checksum {
+                enc.string_str(checksum);
+            }
+            enc.list_end();
+            enc.list_end();
         }
         EditorCommand::TextDeltaChunk { file_token, chunk } => {
-            let params = SvnItem::List(vec![
-                SvnItem::String(file_token.as_bytes().to_vec()),
-                SvnItem::String(chunk.clone()),
-            ]);
-            conn.send_command("textdelta-chunk", params).await
+            enc.word("textdelta-chunk");
+            enc.list_start();
+            enc.string_str(file_token);
+            enc.string_bytes(chunk);
+            enc.list_end();
         }
         EditorCommand::TextDeltaEnd { file_token } => {
-            let params = SvnItem::List(vec![SvnItem::String(file_token.as_bytes().to_vec())]);
-            conn.send_command("textdelta-end", params).await
+            enc.word("textdelta-end");
+            enc.list_start();
+            enc.string_str(file_token);
+            enc.list_end();
         }
         EditorCommand::ChangeFileProp {
             file_token,
             name,
             value,
         } => {
-            let value_tuple = match value {
-                Some(value) => SvnItem::List(vec![SvnItem::String(value.clone())]),
-                None => SvnItem::List(Vec::new()),
-            };
-            let params = SvnItem::List(vec![
-                SvnItem::String(file_token.as_bytes().to_vec()),
-                SvnItem::String(name.as_bytes().to_vec()),
-                value_tuple,
-            ]);
-            conn.send_command("change-file-prop", params).await
+            enc.word("change-file-prop");
+            enc.list_start();
+            enc.string_str(file_token);
+            enc.string_str(name);
+            enc.list_start();
+            if let Some(value) = value {
+                enc.string_bytes(value);
+            }
+            enc.list_end();
+            enc.list_end();
         }
         EditorCommand::CloseFile {
             file_token,
             text_checksum,
         } => {
-            let checksum_tuple = match text_checksum {
-                Some(checksum) => {
-                    SvnItem::List(vec![SvnItem::String(checksum.as_bytes().to_vec())])
-                }
-                None => SvnItem::List(Vec::new()),
-            };
-            let params = SvnItem::List(vec![
-                SvnItem::String(file_token.as_bytes().to_vec()),
-                checksum_tuple,
-            ]);
-            conn.send_command("close-file", params).await
+            enc.word("close-file");
+            enc.list_start();
+            enc.string_str(file_token);
+            enc.list_start();
+            if let Some(checksum) = text_checksum {
+                enc.string_str(checksum);
+            }
+            enc.list_end();
+            enc.list_end();
         }
         EditorCommand::AbsentFile { path, parent_token } => {
-            let path = validate_rel_path(path)?;
-            let params = SvnItem::List(vec![
-                SvnItem::String(path.as_bytes().to_vec()),
-                SvnItem::String(parent_token.as_bytes().to_vec()),
-            ]);
-            conn.send_command("absent-file", params).await
+            let path = validate_rel_path_ref(path)?;
+            enc.word("absent-file");
+            enc.list_start();
+            enc.string_str(path);
+            enc.string_str(parent_token);
+            enc.list_end();
         }
         EditorCommand::CloseEdit => {
-            conn.send_command("close-edit", SvnItem::List(Vec::new()))
-                .await
+            enc.word("close-edit");
+            enc.list_start();
+            enc.list_end();
         }
         EditorCommand::AbortEdit => {
-            conn.send_command("abort-edit", SvnItem::List(Vec::new()))
-                .await
+            enc.word("abort-edit");
+            enc.list_start();
+            enc.list_end();
         }
     }
+    enc.list_end();
+    enc.newline();
+    Ok(())
 }
 
 pub(crate) async fn drive_editor(

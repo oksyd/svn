@@ -9,7 +9,7 @@ use tracing::debug;
 
 use crate::path::{validate_rel_dir_path, validate_rel_path};
 use crate::rasvn::conn::{RaSvnConnection, RaSvnConnectionConfig};
-use crate::rasvn::edit::{drive_editor, parse_failure, send_editor_command, send_report};
+use crate::rasvn::edit::{drive_editor, encode_editor_command, parse_failure, send_report};
 use crate::rasvn::parse::{
     opt_tuple_wordish, parse_commit_info, parse_file_rev_entry, parse_get_dir_listing,
     parse_get_file_response_params, parse_iproplist, parse_list_dirent, parse_location_entry,
@@ -2222,9 +2222,25 @@ impl RaSvnSession {
             let response = conn.call("commit", params).await?;
             let _ = response.success_params("commit")?;
 
+            const MAX_BATCH_BYTES: usize = 256 * 1024;
+            const MAX_COMMANDS_PER_BATCH: usize = 32;
+
+            let mut batch = Vec::new();
+            let mut since_poll = 0usize;
             for command in commands {
-                check_for_edit_status(conn).await?;
-                send_editor_command(conn, command).await?;
+                if since_poll == 0 {
+                    check_for_edit_status(conn).await?;
+                }
+                encode_editor_command(command, &mut batch)?;
+                since_poll += 1;
+                if since_poll >= MAX_COMMANDS_PER_BATCH || batch.len() >= MAX_BATCH_BYTES {
+                    conn.write_wire_bytes(&batch).await?;
+                    batch.clear();
+                    since_poll = 0;
+                }
+            }
+            if !batch.is_empty() {
+                conn.write_wire_bytes(&batch).await?;
             }
 
             let response = conn.read_command_response().await?;

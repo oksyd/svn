@@ -4,6 +4,7 @@ mod item;
 pub(crate) mod parse;
 #[cfg(feature = "cyrus-sasl")]
 pub(crate) mod sasl;
+pub(crate) mod wire;
 
 pub use item::SvnItem;
 
