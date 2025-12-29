@@ -1,4 +1,4 @@
-use crate::path::validate_rel_path_ref;
+use crate::path::{validate_rel_dir_path_ref, validate_rel_path_ref};
 use crate::rasvn::parse::{parse_proplist, parse_server_error};
 use crate::raw::SvnItem;
 use crate::{
@@ -43,9 +43,10 @@ fn encode_report_command(cmd: &ReportCommand, out: &mut Vec<u8>) -> Result<bool,
             lock_token,
             depth,
         } => {
+            let path = validate_rel_dir_path_ref(path)?;
             enc.word("set-path");
             enc.list_start();
-            enc.string_str(path);
+            enc.string_str(path.as_ref());
             enc.number(*rev);
             enc.bool(*start_empty);
             enc.list_start();
@@ -60,9 +61,10 @@ fn encode_report_command(cmd: &ReportCommand, out: &mut Vec<u8>) -> Result<bool,
             Ok(false)
         }
         ReportCommand::DeletePath { path } => {
+            let path = validate_rel_path_ref(path)?;
             enc.word("delete-path");
             enc.list_start();
-            enc.string_str(path);
+            enc.string_str(path.as_ref());
             enc.list_end();
             enc.list_end();
             enc.newline();
@@ -76,9 +78,10 @@ fn encode_report_command(cmd: &ReportCommand, out: &mut Vec<u8>) -> Result<bool,
             lock_token,
             depth,
         } => {
+            let path = validate_rel_dir_path_ref(path)?;
             enc.word("link-path");
             enc.list_start();
-            enc.string_str(path);
+            enc.string_str(path.as_ref());
             enc.string_str(url);
             enc.number(*rev);
             enc.bool(*start_empty);
@@ -148,7 +151,7 @@ pub(crate) fn encode_editor_command(
             let path = validate_rel_path_ref(path)?;
             enc.word("delete-entry");
             enc.list_start();
-            enc.string_str(path);
+            enc.string_str(path.as_ref());
             enc.list_start();
             enc.number(*rev);
             enc.list_end();
@@ -164,13 +167,13 @@ pub(crate) fn encode_editor_command(
             let path = validate_rel_path_ref(path)?;
             enc.word("add-dir");
             enc.list_start();
-            enc.string_str(path);
+            enc.string_str(path.as_ref());
             enc.string_str(parent_token);
             enc.string_str(child_token);
             enc.list_start();
             if let Some((copy_path, copy_rev)) = copy_from {
                 let copy_path = validate_rel_path_ref(copy_path)?;
-                enc.string_str(copy_path);
+                enc.string_str(copy_path.as_ref());
                 enc.number(*copy_rev);
             }
             enc.list_end();
@@ -185,7 +188,7 @@ pub(crate) fn encode_editor_command(
             let path = validate_rel_path_ref(path)?;
             enc.word("open-dir");
             enc.list_start();
-            enc.string_str(path);
+            enc.string_str(path.as_ref());
             enc.string_str(parent_token);
             enc.string_str(child_token);
             enc.list_start();
@@ -219,7 +222,7 @@ pub(crate) fn encode_editor_command(
             let path = validate_rel_path_ref(path)?;
             enc.word("absent-dir");
             enc.list_start();
-            enc.string_str(path);
+            enc.string_str(path.as_ref());
             enc.string_str(parent_token);
             enc.list_end();
         }
@@ -232,13 +235,13 @@ pub(crate) fn encode_editor_command(
             let path = validate_rel_path_ref(path)?;
             enc.word("add-file");
             enc.list_start();
-            enc.string_str(path);
+            enc.string_str(path.as_ref());
             enc.string_str(dir_token);
             enc.string_str(file_token);
             enc.list_start();
             if let Some((copy_path, copy_rev)) = copy_from {
                 let copy_path = validate_rel_path_ref(copy_path)?;
-                enc.string_str(copy_path);
+                enc.string_str(copy_path.as_ref());
                 enc.number(*copy_rev);
             }
             enc.list_end();
@@ -253,7 +256,7 @@ pub(crate) fn encode_editor_command(
             let path = validate_rel_path_ref(path)?;
             enc.word("open-file");
             enc.list_start();
-            enc.string_str(path);
+            enc.string_str(path.as_ref());
             enc.string_str(dir_token);
             enc.string_str(file_token);
             enc.list_start();
@@ -322,7 +325,7 @@ pub(crate) fn encode_editor_command(
             let path = validate_rel_path_ref(path)?;
             enc.word("absent-file");
             enc.list_start();
-            enc.string_str(path);
+            enc.string_str(path.as_ref());
             enc.string_str(parent_token);
             enc.list_end();
         }

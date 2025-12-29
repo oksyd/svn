@@ -135,7 +135,13 @@ impl EditorEventHandler for FsEditor {
                     ensure_no_symlink_prefix(&self.root, parent)?;
                 }
                 if let Ok(meta) = std::fs::symlink_metadata(&fs_path) {
-                    if meta.is_dir() {
+                    if is_symlink_like(&meta) {
+                        if meta.is_dir() {
+                            std::fs::remove_dir(&fs_path)?;
+                        } else {
+                            std::fs::remove_file(&fs_path)?;
+                        }
+                    } else if meta.is_dir() {
                         std::fs::remove_dir_all(&fs_path)?;
                     } else {
                         std::fs::remove_file(&fs_path)?;
@@ -456,7 +462,13 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                         ensure_no_symlink_prefix_async(&self.root, parent).await?;
                     }
                     if let Ok(meta) = tokio::fs::symlink_metadata(&fs_path).await {
-                        if meta.is_dir() {
+                        if is_symlink_like(&meta) {
+                            if meta.is_dir() {
+                                tokio::fs::remove_dir(&fs_path).await?;
+                            } else {
+                                tokio::fs::remove_file(&fs_path).await?;
+                            }
+                        } else if meta.is_dir() {
                             tokio::fs::remove_dir_all(&fs_path).await?;
                         } else {
                             tokio::fs::remove_file(&fs_path).await?;
@@ -1324,6 +1336,76 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn fs_editor_delete_entry_removes_symlink_without_following_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("sentinel.txt");
+        std::fs::write(&sentinel, b"sentinel").unwrap();
+
+        symlink(outside.path(), root.join("trunk")).unwrap();
+
+        let mut editor = FsEditor::new(root.clone());
+        editor
+            .on_event(EditorEvent::OpenRoot {
+                rev: None,
+                token: "d0".to_string(),
+            })
+            .unwrap();
+
+        editor
+            .on_event(EditorEvent::DeleteEntry {
+                path: "trunk".to_string(),
+                rev: 1,
+                dir_token: "d0".to_string(),
+            })
+            .unwrap();
+
+        assert!(!root.join("trunk").exists());
+        assert!(sentinel.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tokio_fs_editor_delete_entry_removes_symlink_without_following_target() {
+        use std::os::unix::fs::symlink;
+
+        run_async(async {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().to_path_buf();
+            let outside = tempfile::tempdir().unwrap();
+            let sentinel = outside.path().join("sentinel.txt");
+            std::fs::write(&sentinel, b"sentinel").unwrap();
+
+            symlink(outside.path(), root.join("trunk")).unwrap();
+
+            let mut editor = TokioFsEditor::new(root.clone());
+            editor
+                .on_event(EditorEvent::OpenRoot {
+                    rev: None,
+                    token: "d0".to_string(),
+                })
+                .await
+                .unwrap();
+
+            editor
+                .on_event(EditorEvent::DeleteEntry {
+                    path: "trunk".to_string(),
+                    rev: 1,
+                    dir_token: "d0".to_string(),
+                })
+                .await
+                .unwrap();
+
+            assert!(!root.join("trunk").exists());
+            assert!(sentinel.exists());
+        });
+    }
+
     #[cfg(windows)]
     fn try_create_junction(link: &Path, target: &Path) -> bool {
         use std::process::Command;
@@ -1396,6 +1478,76 @@ mod tests {
                 .await
                 .unwrap_err();
             assert!(matches!(err, SvnError::InvalidPath(_)));
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn fs_editor_delete_entry_removes_junction_without_following_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("sentinel.txt");
+        std::fs::write(&sentinel, b"sentinel").unwrap();
+
+        if !try_create_junction(&root.join("trunk"), outside.path()) {
+            return;
+        }
+
+        let mut editor = FsEditor::new(root.clone());
+        editor
+            .on_event(EditorEvent::OpenRoot {
+                rev: None,
+                token: "d0".to_string(),
+            })
+            .unwrap();
+
+        editor
+            .on_event(EditorEvent::DeleteEntry {
+                path: "trunk".to_string(),
+                rev: 1,
+                dir_token: "d0".to_string(),
+            })
+            .unwrap();
+
+        assert!(!root.join("trunk").exists());
+        assert!(sentinel.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tokio_fs_editor_delete_entry_removes_junction_without_following_target() {
+        run_async(async {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().to_path_buf();
+            let outside = tempfile::tempdir().unwrap();
+            let sentinel = outside.path().join("sentinel.txt");
+            std::fs::write(&sentinel, b"sentinel").unwrap();
+
+            if !try_create_junction(&root.join("trunk"), outside.path()) {
+                return;
+            }
+
+            let mut editor = TokioFsEditor::new(root.clone());
+            editor
+                .on_event(EditorEvent::OpenRoot {
+                    rev: None,
+                    token: "d0".to_string(),
+                })
+                .await
+                .unwrap();
+
+            editor
+                .on_event(EditorEvent::DeleteEntry {
+                    path: "trunk".to_string(),
+                    rev: 1,
+                    dir_token: "d0".to_string(),
+                })
+                .await
+                .unwrap();
+
+            assert!(!root.join("trunk").exists());
+            assert!(sentinel.exists());
         });
     }
 
