@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 use crate::SvnError;
 use crate::editor::{EditorEvent, EditorEventHandler};
@@ -713,6 +713,84 @@ impl TextDeltaApplierFileSync {
         base.seek(SeekFrom::Start(window.sview_offset))?;
         let mut buf = vec![0u8; window.sview_len];
         base.read_exact(&mut buf)?;
+        Ok(buf)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct TextDeltaApplierFile {
+    base: Option<tokio::fs::File>,
+    base_len: u64,
+    stream: SvndiffStream,
+}
+
+impl TextDeltaApplierFile {
+    pub(crate) async fn new(base: Option<tokio::fs::File>) -> Result<Self, SvnError> {
+        let base_len = match base.as_ref() {
+            Some(file) => file.metadata().await?.len(),
+            None => 0,
+        };
+        Ok(Self {
+            base,
+            base_len,
+            stream: SvndiffStream::default(),
+        })
+    }
+
+    pub(crate) async fn push<W: AsyncWrite + Unpin>(
+        &mut self,
+        chunk: &[u8],
+        out: &mut W,
+    ) -> Result<(), SvnError> {
+        self.stream.push(chunk)?;
+        while let Some((version, window, ins_wire, new_wire)) = self.stream.next_window()? {
+            let instructions = decode_section(version, &ins_wire, MAX_INSTRUCTION_SECTION_LEN)?;
+            let new_data = decode_section(version, &new_wire, DELTA_WINDOW_MAX)?;
+            let source_view = self.read_source_view(&window).await?;
+            let data =
+                apply_window_source(&source_view, window.tview_len, &instructions, &new_data)?;
+            out.write_all(&data).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn finish<W: AsyncWrite + Unpin>(
+        mut self,
+        out: &mut W,
+    ) -> Result<(), SvnError> {
+        if self.stream.is_identity() {
+            if let Some(mut base) = self.base.take() {
+                base.seek(SeekFrom::Start(0)).await?;
+                let _ = tokio::io::copy(&mut base, out).await?;
+            }
+            return Ok(());
+        }
+        self.stream.finish()
+    }
+
+    async fn read_source_view(&mut self, window: &WindowHeader) -> Result<Vec<u8>, SvnError> {
+        if window.sview_len == 0 {
+            return Ok(Vec::new());
+        }
+
+        let end = window
+            .sview_offset
+            .checked_add(window.sview_len as u64)
+            .ok_or_else(|| SvnError::Protocol("svndiff source view overflow".into()))?;
+        if end > self.base_len {
+            return Err(SvnError::Protocol(
+                "svndiff source view out of bounds for base".into(),
+            ));
+        }
+
+        let Some(base) = self.base.as_mut() else {
+            return Err(SvnError::Protocol(
+                "svndiff source view out of bounds for base".into(),
+            ));
+        };
+        base.seek(SeekFrom::Start(window.sview_offset)).await?;
+        let mut buf = vec![0u8; window.sview_len];
+        base.read_exact(&mut buf).await?;
         Ok(buf)
     }
 }

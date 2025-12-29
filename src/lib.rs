@@ -80,7 +80,7 @@ pub use editor::{
     AsyncEditorEventHandler, EditorCommand, EditorEvent, EditorEventHandler, Report, ReportCommand,
 };
 pub use error::{ServerError, ServerErrorItem, SvnError};
-pub use export::FsEditor;
+pub use export::{FsEditor, TokioFsEditor};
 pub use pool::{PooledSession, SessionPool};
 pub use textdelta::{
     RecordedTextDelta, TextDeltaApplier, TextDeltaApplierSync, TextDeltaRecorder, apply_textdelta,
