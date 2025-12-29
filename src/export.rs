@@ -33,7 +33,9 @@ pub struct FsEditor {
     root: PathBuf,
     strip_prefix: Option<String>,
     dir_tokens: HashMap<String, PathBuf>,
+    dir_copy_from: HashMap<String, PathBuf>,
     file_tokens: HashMap<String, PathBuf>,
+    file_copy_from: HashMap<String, PathBuf>,
     pending_files: HashMap<String, PendingFile>,
     next_tmp_id: u64,
     #[cfg(unix)]
@@ -47,7 +49,9 @@ impl FsEditor {
             root: root.into(),
             strip_prefix: None,
             dir_tokens: HashMap::new(),
+            dir_copy_from: HashMap::new(),
             file_tokens: HashMap::new(),
+            file_copy_from: HashMap::new(),
             pending_files: HashMap::new(),
             next_tmp_id: 0,
             #[cfg(unix)]
@@ -96,9 +100,21 @@ impl EditorEventHandler for FsEditor {
                 Ok(())
             }
             EditorEvent::AddDir {
-                path, child_token, ..
+                path,
+                child_token,
+                copy_from,
+                ..
+            } => {
+                let dir = self.repo_path_to_fs(&path, true)?;
+                std::fs::create_dir_all(&dir)?;
+                if let Some((src_path, _src_rev)) = copy_from {
+                    let src = self.repo_path_to_fs(&src_path, true)?;
+                    self.dir_copy_from.insert(child_token.clone(), src);
+                }
+                self.dir_tokens.insert(child_token, dir);
+                Ok(())
             }
-            | EditorEvent::OpenDir {
+            EditorEvent::OpenDir {
                 path, child_token, ..
             } => {
                 let dir = self.repo_path_to_fs(&path, true)?;
@@ -107,6 +123,14 @@ impl EditorEventHandler for FsEditor {
                 Ok(())
             }
             EditorEvent::CloseDir { dir_token } => {
+                if let Some(dest) = self.dir_tokens.get(&dir_token).cloned()
+                    && let Some(src) = self.dir_copy_from.remove(&dir_token)
+                    && src.exists()
+                {
+                    copy_dir_missing_recursive(&src, &dest)?;
+                } else {
+                    let _ = self.dir_copy_from.remove(&dir_token);
+                }
                 let _ = self.dir_tokens.remove(&dir_token);
                 Ok(())
             }
@@ -123,9 +147,23 @@ impl EditorEventHandler for FsEditor {
             }
             EditorEvent::AbsentDir { .. } | EditorEvent::AbsentFile { .. } => Ok(()),
             EditorEvent::AddFile {
-                path, file_token, ..
+                path,
+                file_token,
+                copy_from,
+                ..
+            } => {
+                let file_path = self.repo_path_to_fs(&path, false)?;
+                if let Some(parent) = file_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                if let Some((src_path, _src_rev)) = copy_from {
+                    let src = self.repo_path_to_fs(&src_path, false)?;
+                    self.file_copy_from.insert(file_token.clone(), src.clone());
+                }
+                self.file_tokens.insert(file_token, file_path);
+                Ok(())
             }
-            | EditorEvent::OpenFile {
+            EditorEvent::OpenFile {
                 path, file_token, ..
             } => {
                 let file_path = self.repo_path_to_fs(&path, false)?;
@@ -148,7 +186,13 @@ impl EditorEventHandler for FsEditor {
                     ));
                 }
 
-                let base = match File::open(&dest) {
+                let base = match File::open(&dest).or_else(|err| {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        return Err(err);
+                    }
+                    let src = self.file_copy_from.get(&file_token).ok_or(err)?;
+                    File::open(src)
+                }) {
                     Ok(file) => Some(file),
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
                     Err(err) => return Err(err.into()),
@@ -234,11 +278,25 @@ impl EditorEventHandler for FsEditor {
                 } else if let Some(dest) = dest
                     && !dest.exists()
                 {
-                    return Err(SvnError::Protocol(
-                        "close-file for missing file without textdelta".into(),
-                    ));
+                    if let Some(src) = self.file_copy_from.get(&file_token)
+                        && src.exists()
+                    {
+                        if let Ok(meta) = std::fs::symlink_metadata(&dest)
+                            && meta.file_type().is_symlink()
+                        {
+                            return Err(SvnError::InvalidPath(
+                                "refusing to copy a file over a symlink".into(),
+                            ));
+                        }
+                        let _ = std::fs::copy(src, &dest)?;
+                    } else {
+                        return Err(SvnError::Protocol(
+                            "close-file for missing file without textdelta".into(),
+                        ));
+                    }
                 }
 
+                let _ = self.file_copy_from.remove(&file_token);
                 let _ = self.file_tokens.remove(&file_token);
                 Ok(())
             }
@@ -254,6 +312,8 @@ impl EditorEventHandler for FsEditor {
                 for (_, pending) in self.pending_files.drain() {
                     let _ = std::fs::remove_file(pending.tmp);
                 }
+                self.file_copy_from.clear();
+                self.dir_copy_from.clear();
                 Ok(())
             }
             EditorEvent::FinishReplay | EditorEvent::RevProps { .. } => Ok(()),
@@ -280,7 +340,9 @@ pub struct TokioFsEditor {
     root: PathBuf,
     strip_prefix: Option<String>,
     dir_tokens: HashMap<String, PathBuf>,
+    dir_copy_from: HashMap<String, PathBuf>,
     file_tokens: HashMap<String, PathBuf>,
+    file_copy_from: HashMap<String, PathBuf>,
     pending_files: HashMap<String, PendingFileAsync>,
     next_tmp_id: u64,
     #[cfg(unix)]
@@ -294,7 +356,9 @@ impl TokioFsEditor {
             root: root.into(),
             strip_prefix: None,
             dir_tokens: HashMap::new(),
+            dir_copy_from: HashMap::new(),
             file_tokens: HashMap::new(),
+            file_copy_from: HashMap::new(),
             pending_files: HashMap::new(),
             next_tmp_id: 0,
             #[cfg(unix)]
@@ -347,9 +411,21 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                     Ok(())
                 }
                 EditorEvent::AddDir {
-                    path, child_token, ..
+                    path,
+                    child_token,
+                    copy_from,
+                    ..
+                } => {
+                    let dir = self.repo_path_to_fs(&path, true)?;
+                    tokio::fs::create_dir_all(&dir).await?;
+                    if let Some((src_path, _src_rev)) = copy_from {
+                        let src = self.repo_path_to_fs(&src_path, true)?;
+                        self.dir_copy_from.insert(child_token.clone(), src);
+                    }
+                    self.dir_tokens.insert(child_token, dir);
+                    Ok(())
                 }
-                | EditorEvent::OpenDir {
+                EditorEvent::OpenDir {
                     path, child_token, ..
                 } => {
                     let dir = self.repo_path_to_fs(&path, true)?;
@@ -358,6 +434,14 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                     Ok(())
                 }
                 EditorEvent::CloseDir { dir_token } => {
+                    if let Some(dest) = self.dir_tokens.get(&dir_token).cloned()
+                        && let Some(src) = self.dir_copy_from.remove(&dir_token)
+                        && tokio::fs::metadata(&src).await.is_ok()
+                    {
+                        copy_dir_missing_recursive_async(&src, &dest).await?;
+                    } else {
+                        let _ = self.dir_copy_from.remove(&dir_token);
+                    }
                     let _ = self.dir_tokens.remove(&dir_token);
                     Ok(())
                 }
@@ -374,9 +458,25 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                 }
                 EditorEvent::AbsentDir { .. } | EditorEvent::AbsentFile { .. } => Ok(()),
                 EditorEvent::AddFile {
-                    path, file_token, ..
+                    path,
+                    file_token,
+                    copy_from,
+                    ..
+                } => {
+                    let file_path = self.repo_path_to_fs(&path, false)?;
+                    if let Some(parent) = file_path.parent() {
+                        tokio::fs::create_dir_all(parent).await?;
+                    }
+
+                    if let Some((src_path, _src_rev)) = copy_from {
+                        let src = self.repo_path_to_fs(&src_path, false)?;
+                        self.file_copy_from.insert(file_token.clone(), src.clone());
+                    }
+
+                    self.file_tokens.insert(file_token, file_path);
+                    Ok(())
                 }
-                | EditorEvent::OpenFile {
+                EditorEvent::OpenFile {
                     path, file_token, ..
                 } => {
                     let file_path = self.repo_path_to_fs(&path, false)?;
@@ -401,7 +501,17 @@ impl AsyncEditorEventHandler for TokioFsEditor {
 
                     let base = match tokio::fs::File::open(&dest).await {
                         Ok(file) => Some(file),
-                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                            let src = self.file_copy_from.get(&file_token);
+                            match src {
+                                Some(src) => match tokio::fs::File::open(src).await {
+                                    Ok(file) => Some(file),
+                                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                                    Err(err) => return Err(err.into()),
+                                },
+                                None => None,
+                            }
+                        }
                         Err(err) => return Err(err.into()),
                     };
                     let applier = TextDeltaApplierFile::new(base).await?;
@@ -491,15 +601,31 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                         match tokio::fs::metadata(&dest).await {
                             Ok(_) => {}
                             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                                return Err(SvnError::Protocol(
-                                    "close-file for missing file without textdelta".into(),
-                                ));
+                                let src = self.file_copy_from.get(&file_token);
+                                match src {
+                                    Some(src) if tokio::fs::metadata(src).await.is_ok() => {
+                                        if let Ok(meta) = tokio::fs::symlink_metadata(&dest).await
+                                            && meta.file_type().is_symlink()
+                                        {
+                                            return Err(SvnError::InvalidPath(
+                                                "refusing to copy a file over a symlink".into(),
+                                            ));
+                                        }
+                                        let _ = tokio::fs::copy(src, &dest).await?;
+                                    }
+                                    _ => {
+                                        return Err(SvnError::Protocol(
+                                            "close-file for missing file without textdelta".into(),
+                                        ));
+                                    }
+                                }
                             }
                             Err(err) => return Err(err.into()),
                         }
                     }
 
                     let _ = self.file_tokens.remove(&file_token);
+                    let _ = self.file_copy_from.remove(&file_token);
                     Ok(())
                 }
                 EditorEvent::CloseEdit => {
@@ -514,6 +640,8 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                     for (_, pending) in self.pending_files.drain() {
                         let _ = tokio::fs::remove_file(pending.tmp).await;
                     }
+                    self.file_copy_from.clear();
+                    self.dir_copy_from.clear();
                     Ok(())
                 }
                 EditorEvent::FinishReplay | EditorEvent::RevProps { .. } => Ok(()),
@@ -681,6 +809,209 @@ fn new_tmp_path(root: &Path, dest: &Path, token: &str, next_tmp_id: &mut u64) ->
     parent.join(format!(".svn-rs.{name}.{token}.{}.tmp", *next_tmp_id))
 }
 
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), SvnError> {
+    if dest.starts_with(src) {
+        return Err(SvnError::InvalidPath(
+            "refusing to copy a directory into its own subtree".into(),
+        ));
+    }
+
+    let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
+    while let Some((src_dir, dest_dir)) = stack.pop() {
+        std::fs::create_dir_all(&dest_dir)?;
+        for entry in std::fs::read_dir(&src_dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let src_path = entry.path();
+            let dest_path = dest_dir.join(entry.file_name());
+
+            if file_type.is_dir() {
+                stack.push((src_path, dest_path));
+                continue;
+            }
+
+            if file_type.is_file() {
+                if let Ok(meta) = std::fs::symlink_metadata(&dest_path)
+                    && meta.file_type().is_symlink()
+                {
+                    return Err(SvnError::InvalidPath(
+                        "refusing to copy a file over a symlink".into(),
+                    ));
+                }
+                let _ = std::fs::copy(&src_path, &dest_path)?;
+                continue;
+            }
+
+            if file_type.is_symlink() {
+                return Err(SvnError::InvalidPath("refusing to copy a symlink".into()));
+            }
+
+            return Err(SvnError::InvalidPath(
+                "refusing to copy an unknown file type".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn copy_dir_recursive_async(src: &Path, dest: &Path) -> Result<(), SvnError> {
+    if dest.starts_with(src) {
+        return Err(SvnError::InvalidPath(
+            "refusing to copy a directory into its own subtree".into(),
+        ));
+    }
+
+    let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
+    while let Some((src_dir, dest_dir)) = stack.pop() {
+        tokio::fs::create_dir_all(&dest_dir).await?;
+        let mut rd = tokio::fs::read_dir(&src_dir).await?;
+        while let Some(entry) = rd.next_entry().await? {
+            let file_type = entry.file_type().await?;
+            let src_path = entry.path();
+            let dest_path = dest_dir.join(entry.file_name());
+
+            if file_type.is_dir() {
+                stack.push((src_path, dest_path));
+                continue;
+            }
+
+            if file_type.is_file() {
+                if let Ok(meta) = tokio::fs::symlink_metadata(&dest_path).await
+                    && meta.file_type().is_symlink()
+                {
+                    return Err(SvnError::InvalidPath(
+                        "refusing to copy a file over a symlink".into(),
+                    ));
+                }
+                let _ = tokio::fs::copy(&src_path, &dest_path).await?;
+                continue;
+            }
+
+            if file_type.is_symlink() {
+                return Err(SvnError::InvalidPath("refusing to copy a symlink".into()));
+            }
+
+            return Err(SvnError::InvalidPath(
+                "refusing to copy an unknown file type".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_missing_recursive(src: &Path, dest: &Path) -> Result<(), SvnError> {
+    if dest.starts_with(src) {
+        return Err(SvnError::InvalidPath(
+            "refusing to copy a directory into its own subtree".into(),
+        ));
+    }
+
+    let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
+    while let Some((src_dir, dest_dir)) = stack.pop() {
+        std::fs::create_dir_all(&dest_dir)?;
+        for entry in std::fs::read_dir(&src_dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let src_path = entry.path();
+            let dest_path = dest_dir.join(entry.file_name());
+
+            if let Ok(meta) = std::fs::symlink_metadata(&dest_path)
+                && meta.file_type().is_symlink()
+            {
+                return Err(SvnError::InvalidPath(
+                    "refusing to copy a file over a symlink".into(),
+                ));
+            }
+
+            if dest_path.exists() {
+                if file_type.is_dir()
+                    && let Ok(dest_meta) = std::fs::metadata(&dest_path)
+                    && dest_meta.is_dir()
+                {
+                    stack.push((src_path, dest_path));
+                }
+                continue;
+            }
+
+            if file_type.is_dir() {
+                copy_dir_recursive(&src_path, &dest_path)?;
+                continue;
+            }
+
+            if file_type.is_file() {
+                let _ = std::fs::copy(&src_path, &dest_path)?;
+                continue;
+            }
+
+            if file_type.is_symlink() {
+                return Err(SvnError::InvalidPath("refusing to copy a symlink".into()));
+            }
+
+            return Err(SvnError::InvalidPath(
+                "refusing to copy an unknown file type".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn copy_dir_missing_recursive_async(src: &Path, dest: &Path) -> Result<(), SvnError> {
+    if dest.starts_with(src) {
+        return Err(SvnError::InvalidPath(
+            "refusing to copy a directory into its own subtree".into(),
+        ));
+    }
+
+    let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
+    while let Some((src_dir, dest_dir)) = stack.pop() {
+        tokio::fs::create_dir_all(&dest_dir).await?;
+        let mut rd = tokio::fs::read_dir(&src_dir).await?;
+        while let Some(entry) = rd.next_entry().await? {
+            let file_type = entry.file_type().await?;
+            let src_path = entry.path();
+            let dest_path = dest_dir.join(entry.file_name());
+
+            if let Ok(meta) = tokio::fs::symlink_metadata(&dest_path).await
+                && meta.file_type().is_symlink()
+            {
+                return Err(SvnError::InvalidPath(
+                    "refusing to copy a file over a symlink".into(),
+                ));
+            }
+
+            if tokio::fs::metadata(&dest_path).await.is_ok() {
+                if file_type.is_dir()
+                    && tokio::fs::metadata(&dest_path)
+                        .await
+                        .is_ok_and(|m| m.is_dir())
+                {
+                    stack.push((src_path, dest_path));
+                }
+                continue;
+            }
+
+            if file_type.is_dir() {
+                copy_dir_recursive_async(&src_path, &dest_path).await?;
+                continue;
+            }
+
+            if file_type.is_file() {
+                let _ = tokio::fs::copy(&src_path, &dest_path).await?;
+                continue;
+            }
+
+            if file_type.is_symlink() {
+                return Err(SvnError::InvalidPath("refusing to copy a symlink".into()));
+            }
+
+            return Err(SvnError::InvalidPath(
+                "refusing to copy an unknown file type".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -771,6 +1102,155 @@ mod tests {
             editor.on_event(EditorEvent::CloseEdit).await.unwrap();
 
             let written = tokio::fs::read(root.join("hello.txt")).await.unwrap();
+            assert_eq!(written, b"hello");
+        });
+    }
+
+    #[test]
+    fn fs_editor_copies_file_from_copyfrom_when_no_textdelta_is_sent() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+
+        std::fs::write(root.join("src.txt"), b"hello").unwrap();
+
+        let mut editor = FsEditor::new(root.clone());
+        editor
+            .on_event(EditorEvent::OpenRoot {
+                rev: None,
+                token: "d0".to_string(),
+            })
+            .unwrap();
+        editor
+            .on_event(EditorEvent::AddFile {
+                path: "dst.txt".to_string(),
+                dir_token: "d0".to_string(),
+                file_token: "f1".to_string(),
+                copy_from: Some(("src.txt".to_string(), 1)),
+            })
+            .unwrap();
+        editor
+            .on_event(EditorEvent::CloseFile {
+                file_token: "f1".to_string(),
+                text_checksum: None,
+            })
+            .unwrap();
+        editor.on_event(EditorEvent::CloseEdit).unwrap();
+
+        assert_eq!(std::fs::read(root.join("dst.txt")).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn fs_editor_copies_dir_from_copyfrom_on_close_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+
+        std::fs::create_dir_all(root.join("srcdir/sub")).unwrap();
+        std::fs::write(root.join("srcdir/sub/file.txt"), b"hello").unwrap();
+
+        let mut editor = FsEditor::new(root.clone());
+        editor
+            .on_event(EditorEvent::OpenRoot {
+                rev: None,
+                token: "d0".to_string(),
+            })
+            .unwrap();
+        editor
+            .on_event(EditorEvent::AddDir {
+                path: "destdir".to_string(),
+                parent_token: "d0".to_string(),
+                child_token: "d1".to_string(),
+                copy_from: Some(("srcdir".to_string(), 1)),
+            })
+            .unwrap();
+        editor
+            .on_event(EditorEvent::CloseDir {
+                dir_token: "d1".to_string(),
+            })
+            .unwrap();
+        editor.on_event(EditorEvent::CloseEdit).unwrap();
+
+        assert_eq!(
+            std::fs::read(root.join("destdir/sub/file.txt")).unwrap(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn tokio_fs_editor_copies_file_from_copyfrom_when_no_textdelta_is_sent() {
+        run_async(async {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().to_path_buf();
+
+            std::fs::write(root.join("src.txt"), b"hello").unwrap();
+
+            let mut editor = TokioFsEditor::new(root.clone());
+            editor
+                .on_event(EditorEvent::OpenRoot {
+                    rev: None,
+                    token: "d0".to_string(),
+                })
+                .await
+                .unwrap();
+            editor
+                .on_event(EditorEvent::AddFile {
+                    path: "dst.txt".to_string(),
+                    dir_token: "d0".to_string(),
+                    file_token: "f1".to_string(),
+                    copy_from: Some(("src.txt".to_string(), 1)),
+                })
+                .await
+                .unwrap();
+            editor
+                .on_event(EditorEvent::CloseFile {
+                    file_token: "f1".to_string(),
+                    text_checksum: None,
+                })
+                .await
+                .unwrap();
+            editor.on_event(EditorEvent::CloseEdit).await.unwrap();
+
+            let written = tokio::fs::read(root.join("dst.txt")).await.unwrap();
+            assert_eq!(written, b"hello");
+        });
+    }
+
+    #[test]
+    fn tokio_fs_editor_copies_dir_from_copyfrom_on_close_dir() {
+        run_async(async {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().to_path_buf();
+
+            std::fs::create_dir_all(root.join("srcdir/sub")).unwrap();
+            std::fs::write(root.join("srcdir/sub/file.txt"), b"hello").unwrap();
+
+            let mut editor = TokioFsEditor::new(root.clone());
+            editor
+                .on_event(EditorEvent::OpenRoot {
+                    rev: None,
+                    token: "d0".to_string(),
+                })
+                .await
+                .unwrap();
+            editor
+                .on_event(EditorEvent::AddDir {
+                    path: "destdir".to_string(),
+                    parent_token: "d0".to_string(),
+                    child_token: "d1".to_string(),
+                    copy_from: Some(("srcdir".to_string(), 1)),
+                })
+                .await
+                .unwrap();
+            editor
+                .on_event(EditorEvent::CloseDir {
+                    dir_token: "d1".to_string(),
+                })
+                .await
+                .unwrap();
+            editor.on_event(EditorEvent::CloseEdit).await.unwrap();
+
+            let written = tokio::fs::read(root.join("destdir/sub/file.txt"))
+                .await
+                .unwrap();
             assert_eq!(written, b"hello");
         });
     }
