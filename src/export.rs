@@ -33,7 +33,6 @@ pub struct FsEditor {
     root: PathBuf,
     strip_prefix: Option<String>,
     dir_tokens: HashMap<String, PathBuf>,
-    dir_copy_from: HashMap<String, PathBuf>,
     file_tokens: HashMap<String, PathBuf>,
     file_copy_from: HashMap<String, PathBuf>,
     pending_files: HashMap<String, PendingFile>,
@@ -49,7 +48,6 @@ impl FsEditor {
             root: root.into(),
             strip_prefix: None,
             dir_tokens: HashMap::new(),
-            dir_copy_from: HashMap::new(),
             file_tokens: HashMap::new(),
             file_copy_from: HashMap::new(),
             pending_files: HashMap::new(),
@@ -109,7 +107,9 @@ impl EditorEventHandler for FsEditor {
                 std::fs::create_dir_all(&dir)?;
                 if let Some((src_path, _src_rev)) = copy_from {
                     let src = self.repo_path_to_fs(&src_path, true)?;
-                    self.dir_copy_from.insert(child_token.clone(), src);
+                    if src.exists() {
+                        copy_dir_missing_recursive(&src, &dir)?;
+                    }
                 }
                 self.dir_tokens.insert(child_token, dir);
                 Ok(())
@@ -123,14 +123,6 @@ impl EditorEventHandler for FsEditor {
                 Ok(())
             }
             EditorEvent::CloseDir { dir_token } => {
-                if let Some(dest) = self.dir_tokens.get(&dir_token).cloned()
-                    && let Some(src) = self.dir_copy_from.remove(&dir_token)
-                    && src.exists()
-                {
-                    copy_dir_missing_recursive(&src, &dest)?;
-                } else {
-                    let _ = self.dir_copy_from.remove(&dir_token);
-                }
                 let _ = self.dir_tokens.remove(&dir_token);
                 Ok(())
             }
@@ -313,7 +305,6 @@ impl EditorEventHandler for FsEditor {
                     let _ = std::fs::remove_file(pending.tmp);
                 }
                 self.file_copy_from.clear();
-                self.dir_copy_from.clear();
                 Ok(())
             }
             EditorEvent::FinishReplay | EditorEvent::RevProps { .. } => Ok(()),
@@ -340,7 +331,6 @@ pub struct TokioFsEditor {
     root: PathBuf,
     strip_prefix: Option<String>,
     dir_tokens: HashMap<String, PathBuf>,
-    dir_copy_from: HashMap<String, PathBuf>,
     file_tokens: HashMap<String, PathBuf>,
     file_copy_from: HashMap<String, PathBuf>,
     pending_files: HashMap<String, PendingFileAsync>,
@@ -356,7 +346,6 @@ impl TokioFsEditor {
             root: root.into(),
             strip_prefix: None,
             dir_tokens: HashMap::new(),
-            dir_copy_from: HashMap::new(),
             file_tokens: HashMap::new(),
             file_copy_from: HashMap::new(),
             pending_files: HashMap::new(),
@@ -420,7 +409,9 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                     tokio::fs::create_dir_all(&dir).await?;
                     if let Some((src_path, _src_rev)) = copy_from {
                         let src = self.repo_path_to_fs(&src_path, true)?;
-                        self.dir_copy_from.insert(child_token.clone(), src);
+                        if tokio::fs::metadata(&src).await.is_ok() {
+                            copy_dir_missing_recursive_async(&src, &dir).await?;
+                        }
                     }
                     self.dir_tokens.insert(child_token, dir);
                     Ok(())
@@ -434,14 +425,6 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                     Ok(())
                 }
                 EditorEvent::CloseDir { dir_token } => {
-                    if let Some(dest) = self.dir_tokens.get(&dir_token).cloned()
-                        && let Some(src) = self.dir_copy_from.remove(&dir_token)
-                        && tokio::fs::metadata(&src).await.is_ok()
-                    {
-                        copy_dir_missing_recursive_async(&src, &dest).await?;
-                    } else {
-                        let _ = self.dir_copy_from.remove(&dir_token);
-                    }
                     let _ = self.dir_tokens.remove(&dir_token);
                     Ok(())
                 }
@@ -641,7 +624,6 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                         let _ = tokio::fs::remove_file(pending.tmp).await;
                     }
                     self.file_copy_from.clear();
-                    self.dir_copy_from.clear();
                     Ok(())
                 }
                 EditorEvent::FinishReplay | EditorEvent::RevProps { .. } => Ok(()),
@@ -1140,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn fs_editor_copies_dir_from_copyfrom_on_close_dir() {
+    fn fs_editor_copies_dir_from_copyfrom() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().to_path_buf();
 
@@ -1160,6 +1142,67 @@ mod tests {
                 parent_token: "d0".to_string(),
                 child_token: "d1".to_string(),
                 copy_from: Some(("srcdir".to_string(), 1)),
+            })
+            .unwrap();
+        editor
+            .on_event(EditorEvent::CloseDir {
+                dir_token: "d1".to_string(),
+            })
+            .unwrap();
+        editor.on_event(EditorEvent::CloseEdit).unwrap();
+
+        assert_eq!(
+            std::fs::read(root.join("destdir/sub/file.txt")).unwrap(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn fs_editor_dir_copyfrom_provides_base_for_identity_textdelta() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+
+        std::fs::create_dir_all(root.join("srcdir/sub")).unwrap();
+        std::fs::write(root.join("srcdir/sub/file.txt"), b"hello").unwrap();
+
+        let mut editor = FsEditor::new(root.clone());
+        editor
+            .on_event(EditorEvent::OpenRoot {
+                rev: None,
+                token: "d0".to_string(),
+            })
+            .unwrap();
+        editor
+            .on_event(EditorEvent::AddDir {
+                path: "destdir".to_string(),
+                parent_token: "d0".to_string(),
+                child_token: "d1".to_string(),
+                copy_from: Some(("srcdir".to_string(), 1)),
+            })
+            .unwrap();
+        editor
+            .on_event(EditorEvent::OpenFile {
+                path: "destdir/sub/file.txt".to_string(),
+                dir_token: "d1".to_string(),
+                file_token: "f1".to_string(),
+                rev: 1,
+            })
+            .unwrap();
+        editor
+            .on_event(EditorEvent::ApplyTextDelta {
+                file_token: "f1".to_string(),
+                base_checksum: None,
+            })
+            .unwrap();
+        editor
+            .on_event(EditorEvent::TextDeltaEnd {
+                file_token: "f1".to_string(),
+            })
+            .unwrap();
+        editor
+            .on_event(EditorEvent::CloseFile {
+                file_token: "f1".to_string(),
+                text_checksum: None,
             })
             .unwrap();
         editor
@@ -1215,7 +1258,7 @@ mod tests {
     }
 
     #[test]
-    fn tokio_fs_editor_copies_dir_from_copyfrom_on_close_dir() {
+    fn tokio_fs_editor_copies_dir_from_copyfrom() {
         run_async(async {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().to_path_buf();
@@ -1237,6 +1280,76 @@ mod tests {
                     parent_token: "d0".to_string(),
                     child_token: "d1".to_string(),
                     copy_from: Some(("srcdir".to_string(), 1)),
+                })
+                .await
+                .unwrap();
+            editor
+                .on_event(EditorEvent::CloseDir {
+                    dir_token: "d1".to_string(),
+                })
+                .await
+                .unwrap();
+            editor.on_event(EditorEvent::CloseEdit).await.unwrap();
+
+            let written = tokio::fs::read(root.join("destdir/sub/file.txt"))
+                .await
+                .unwrap();
+            assert_eq!(written, b"hello");
+        });
+    }
+
+    #[test]
+    fn tokio_fs_editor_dir_copyfrom_provides_base_for_identity_textdelta() {
+        run_async(async {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().to_path_buf();
+
+            std::fs::create_dir_all(root.join("srcdir/sub")).unwrap();
+            std::fs::write(root.join("srcdir/sub/file.txt"), b"hello").unwrap();
+
+            let mut editor = TokioFsEditor::new(root.clone());
+            editor
+                .on_event(EditorEvent::OpenRoot {
+                    rev: None,
+                    token: "d0".to_string(),
+                })
+                .await
+                .unwrap();
+            editor
+                .on_event(EditorEvent::AddDir {
+                    path: "destdir".to_string(),
+                    parent_token: "d0".to_string(),
+                    child_token: "d1".to_string(),
+                    copy_from: Some(("srcdir".to_string(), 1)),
+                })
+                .await
+                .unwrap();
+            editor
+                .on_event(EditorEvent::OpenFile {
+                    path: "destdir/sub/file.txt".to_string(),
+                    dir_token: "d1".to_string(),
+                    file_token: "f1".to_string(),
+                    rev: 1,
+                })
+                .await
+                .unwrap();
+            editor
+                .on_event(EditorEvent::ApplyTextDelta {
+                    file_token: "f1".to_string(),
+                    base_checksum: None,
+                })
+                .await
+                .unwrap();
+            editor
+                .on_event(EditorEvent::TextDeltaEnd {
+                    file_token: "f1".to_string(),
+                })
+                .await
+                .unwrap();
+            editor
+                .on_event(EditorEvent::CloseFile {
+                    file_token: "f1".to_string(),
+                    text_checksum: None,
                 })
                 .await
                 .unwrap();
