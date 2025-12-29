@@ -23,6 +23,8 @@ use crate::{RaSvnClient, RaSvnSession, SvnError};
 ///
 /// - Paths from the server are treated as repository-relative (`/`-separated)
 ///   and are validated to avoid directory traversal.
+/// - Writes are refused beneath symlinks (or Windows reparse points) under
+///   `root`, to avoid writing outside the export directory.
 /// - Text deltas are applied to the current on-disk file as the base. For a
 ///   fresh export, use a report with `start_empty = true` so servers typically
 ///   send fulltext deltas.
@@ -178,10 +180,10 @@ impl EditorEventHandler for FsEditor {
                 ensure_no_symlink_prefix(&self.root, &dest)?;
 
                 if let Ok(meta) = std::fs::symlink_metadata(&dest)
-                    && meta.file_type().is_symlink()
+                    && is_symlink_like(&meta)
                 {
                     return Err(SvnError::InvalidPath(
-                        "refusing to apply textdelta to a symlink".into(),
+                        "refusing to apply textdelta to a symlink/reparse point".into(),
                     ));
                 }
 
@@ -290,10 +292,10 @@ impl EditorEventHandler for FsEditor {
                         ensure_no_symlink_prefix(&self.root, src)?;
                         ensure_no_symlink_prefix(&self.root, &dest)?;
                         if let Ok(meta) = std::fs::symlink_metadata(&dest)
-                            && meta.file_type().is_symlink()
+                            && is_symlink_like(&meta)
                         {
                             return Err(SvnError::InvalidPath(
-                                "refusing to copy a file over a symlink".into(),
+                                "refusing to copy a file over a symlink/reparse point".into(),
                             ));
                         }
                         let _ = std::fs::copy(src, &dest)?;
@@ -342,6 +344,9 @@ struct PendingFile {
 ///
 /// This editor implements [`AsyncEditorEventHandler`], so it can be driven via
 /// methods like [`crate::RaSvnSession::update_with_async_handler`].
+///
+/// Like [`FsEditor`], it refuses writes through symlinks (or Windows reparse
+/// points) under `root`.
 #[derive(Debug)]
 pub struct TokioFsEditor {
     root: PathBuf,
@@ -498,10 +503,10 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                     ensure_no_symlink_prefix_async(&self.root, &dest).await?;
 
                     if let Ok(meta) = tokio::fs::symlink_metadata(&dest).await
-                        && meta.file_type().is_symlink()
+                        && is_symlink_like(&meta)
                     {
                         return Err(SvnError::InvalidPath(
-                            "refusing to apply textdelta to a symlink".into(),
+                            "refusing to apply textdelta to a symlink/reparse point".into(),
                         ));
                     }
 
@@ -620,10 +625,11 @@ impl AsyncEditorEventHandler for TokioFsEditor {
 
                                             if let Ok(meta) =
                                                 tokio::fs::symlink_metadata(&dest).await
-                                                && meta.file_type().is_symlink()
+                                                && is_symlink_like(&meta)
                                             {
                                                 return Err(SvnError::InvalidPath(
-                                                    "refusing to copy a file over a symlink".into(),
+                                                    "refusing to copy a file over a symlink/reparse point"
+                                                        .into(),
                                                 ));
                                             }
                                             let _ = tokio::fs::copy(src, &dest).await?;
@@ -808,6 +814,21 @@ fn map_repo_path_to_fs(
     Ok(out)
 }
 
+fn is_symlink_like(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+    }
+
+    #[cfg(not(windows))]
+    {
+        meta.file_type().is_symlink()
+    }
+}
+
 fn ensure_no_symlink_prefix(root: &Path, path: &Path) -> Result<(), SvnError> {
     let rel = path
         .strip_prefix(root)
@@ -819,9 +840,9 @@ fn ensure_no_symlink_prefix(root: &Path, path: &Path) -> Result<(), SvnError> {
 
         match std::fs::symlink_metadata(&cur) {
             Ok(meta) => {
-                if meta.file_type().is_symlink() {
+                if is_symlink_like(&meta) {
                     return Err(SvnError::InvalidPath(
-                        "refusing to write through a symlink".into(),
+                        "refusing to write through a symlink/reparse point".into(),
                     ));
                 }
             }
@@ -844,9 +865,9 @@ async fn ensure_no_symlink_prefix_async(root: &Path, path: &Path) -> Result<(), 
 
         match tokio::fs::symlink_metadata(&cur).await {
             Ok(meta) => {
-                if meta.file_type().is_symlink() {
+                if is_symlink_like(&meta) {
                     return Err(SvnError::InvalidPath(
-                        "refusing to write through a symlink".into(),
+                        "refusing to write through a symlink/reparse point".into(),
                     ));
                 }
             }
@@ -871,9 +892,9 @@ fn create_dir_all_no_symlink(root: &Path, dir: &Path) -> Result<(), SvnError> {
 
         match std::fs::symlink_metadata(&cur) {
             Ok(meta) => {
-                if meta.file_type().is_symlink() {
+                if is_symlink_like(&meta) {
                     return Err(SvnError::InvalidPath(
-                        "refusing to write through a symlink".into(),
+                        "refusing to write through a symlink/reparse point".into(),
                     ));
                 }
                 if !meta.is_dir() {
@@ -890,9 +911,9 @@ fn create_dir_all_no_symlink(root: &Path, dir: &Path) -> Result<(), SvnError> {
                 }
 
                 let meta = std::fs::symlink_metadata(&cur)?;
-                if meta.file_type().is_symlink() {
+                if is_symlink_like(&meta) {
                     return Err(SvnError::InvalidPath(
-                        "refusing to write through a symlink".into(),
+                        "refusing to write through a symlink/reparse point".into(),
                     ));
                 }
                 if !meta.is_dir() {
@@ -921,9 +942,9 @@ async fn create_dir_all_no_symlink_async(root: &Path, dir: &Path) -> Result<(), 
 
         match tokio::fs::symlink_metadata(&cur).await {
             Ok(meta) => {
-                if meta.file_type().is_symlink() {
+                if is_symlink_like(&meta) {
                     return Err(SvnError::InvalidPath(
-                        "refusing to write through a symlink".into(),
+                        "refusing to write through a symlink/reparse point".into(),
                     ));
                 }
                 if !meta.is_dir() {
@@ -940,9 +961,9 @@ async fn create_dir_all_no_symlink_async(root: &Path, dir: &Path) -> Result<(), 
                 }
 
                 let meta = tokio::fs::symlink_metadata(&cur).await?;
-                if meta.file_type().is_symlink() {
+                if is_symlink_like(&meta) {
                     return Err(SvnError::InvalidPath(
-                        "refusing to write through a symlink".into(),
+                        "refusing to write through a symlink/reparse point".into(),
                     ));
                 }
                 if !meta.is_dir() {
@@ -988,11 +1009,24 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), SvnError> {
 
     let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
     while let Some((src_dir, dest_dir)) = stack.pop() {
+        if let Ok(meta) = std::fs::symlink_metadata(&dest_dir)
+            && is_symlink_like(&meta)
+        {
+            return Err(SvnError::InvalidPath(
+                "refusing to copy into a symlink/reparse point".into(),
+            ));
+        }
         std::fs::create_dir_all(&dest_dir)?;
         for entry in std::fs::read_dir(&src_dir)? {
             let entry = entry?;
-            let file_type = entry.file_type()?;
             let src_path = entry.path();
+            let src_meta = std::fs::symlink_metadata(&src_path)?;
+            if is_symlink_like(&src_meta) {
+                return Err(SvnError::InvalidPath(
+                    "refusing to copy a symlink/reparse point".into(),
+                ));
+            }
+            let file_type = src_meta.file_type();
             let dest_path = dest_dir.join(entry.file_name());
 
             if file_type.is_dir() {
@@ -1002,18 +1036,14 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), SvnError> {
 
             if file_type.is_file() {
                 if let Ok(meta) = std::fs::symlink_metadata(&dest_path)
-                    && meta.file_type().is_symlink()
+                    && is_symlink_like(&meta)
                 {
                     return Err(SvnError::InvalidPath(
-                        "refusing to copy a file over a symlink".into(),
+                        "refusing to copy a file over a symlink/reparse point".into(),
                     ));
                 }
                 let _ = std::fs::copy(&src_path, &dest_path)?;
                 continue;
-            }
-
-            if file_type.is_symlink() {
-                return Err(SvnError::InvalidPath("refusing to copy a symlink".into()));
             }
 
             return Err(SvnError::InvalidPath(
@@ -1033,11 +1063,24 @@ async fn copy_dir_recursive_async(src: &Path, dest: &Path) -> Result<(), SvnErro
 
     let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
     while let Some((src_dir, dest_dir)) = stack.pop() {
+        if let Ok(meta) = tokio::fs::symlink_metadata(&dest_dir).await
+            && is_symlink_like(&meta)
+        {
+            return Err(SvnError::InvalidPath(
+                "refusing to copy into a symlink/reparse point".into(),
+            ));
+        }
         tokio::fs::create_dir_all(&dest_dir).await?;
         let mut rd = tokio::fs::read_dir(&src_dir).await?;
         while let Some(entry) = rd.next_entry().await? {
-            let file_type = entry.file_type().await?;
             let src_path = entry.path();
+            let src_meta = tokio::fs::symlink_metadata(&src_path).await?;
+            if is_symlink_like(&src_meta) {
+                return Err(SvnError::InvalidPath(
+                    "refusing to copy a symlink/reparse point".into(),
+                ));
+            }
+            let file_type = src_meta.file_type();
             let dest_path = dest_dir.join(entry.file_name());
 
             if file_type.is_dir() {
@@ -1047,18 +1090,14 @@ async fn copy_dir_recursive_async(src: &Path, dest: &Path) -> Result<(), SvnErro
 
             if file_type.is_file() {
                 if let Ok(meta) = tokio::fs::symlink_metadata(&dest_path).await
-                    && meta.file_type().is_symlink()
+                    && is_symlink_like(&meta)
                 {
                     return Err(SvnError::InvalidPath(
-                        "refusing to copy a file over a symlink".into(),
+                        "refusing to copy a file over a symlink/reparse point".into(),
                     ));
                 }
                 let _ = tokio::fs::copy(&src_path, &dest_path).await?;
                 continue;
-            }
-
-            if file_type.is_symlink() {
-                return Err(SvnError::InvalidPath("refusing to copy a symlink".into()));
             }
 
             return Err(SvnError::InvalidPath(
@@ -1078,18 +1117,31 @@ fn copy_dir_missing_recursive(src: &Path, dest: &Path) -> Result<(), SvnError> {
 
     let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
     while let Some((src_dir, dest_dir)) = stack.pop() {
+        if let Ok(meta) = std::fs::symlink_metadata(&dest_dir)
+            && is_symlink_like(&meta)
+        {
+            return Err(SvnError::InvalidPath(
+                "refusing to copy into a symlink/reparse point".into(),
+            ));
+        }
         std::fs::create_dir_all(&dest_dir)?;
         for entry in std::fs::read_dir(&src_dir)? {
             let entry = entry?;
-            let file_type = entry.file_type()?;
             let src_path = entry.path();
+            let src_meta = std::fs::symlink_metadata(&src_path)?;
+            if is_symlink_like(&src_meta) {
+                return Err(SvnError::InvalidPath(
+                    "refusing to copy a symlink/reparse point".into(),
+                ));
+            }
+            let file_type = src_meta.file_type();
             let dest_path = dest_dir.join(entry.file_name());
 
             if let Ok(meta) = std::fs::symlink_metadata(&dest_path)
-                && meta.file_type().is_symlink()
+                && is_symlink_like(&meta)
             {
                 return Err(SvnError::InvalidPath(
-                    "refusing to copy a file over a symlink".into(),
+                    "refusing to copy a file over a symlink/reparse point".into(),
                 ));
             }
 
@@ -1113,10 +1165,6 @@ fn copy_dir_missing_recursive(src: &Path, dest: &Path) -> Result<(), SvnError> {
                 continue;
             }
 
-            if file_type.is_symlink() {
-                return Err(SvnError::InvalidPath("refusing to copy a symlink".into()));
-            }
-
             return Err(SvnError::InvalidPath(
                 "refusing to copy an unknown file type".into(),
             ));
@@ -1134,18 +1182,31 @@ async fn copy_dir_missing_recursive_async(src: &Path, dest: &Path) -> Result<(),
 
     let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
     while let Some((src_dir, dest_dir)) = stack.pop() {
+        if let Ok(meta) = tokio::fs::symlink_metadata(&dest_dir).await
+            && is_symlink_like(&meta)
+        {
+            return Err(SvnError::InvalidPath(
+                "refusing to copy into a symlink/reparse point".into(),
+            ));
+        }
         tokio::fs::create_dir_all(&dest_dir).await?;
         let mut rd = tokio::fs::read_dir(&src_dir).await?;
         while let Some(entry) = rd.next_entry().await? {
-            let file_type = entry.file_type().await?;
             let src_path = entry.path();
+            let src_meta = tokio::fs::symlink_metadata(&src_path).await?;
+            if is_symlink_like(&src_meta) {
+                return Err(SvnError::InvalidPath(
+                    "refusing to copy a symlink/reparse point".into(),
+                ));
+            }
+            let file_type = src_meta.file_type();
             let dest_path = dest_dir.join(entry.file_name());
 
             if let Ok(meta) = tokio::fs::symlink_metadata(&dest_path).await
-                && meta.file_type().is_symlink()
+                && is_symlink_like(&meta)
             {
                 return Err(SvnError::InvalidPath(
-                    "refusing to copy a file over a symlink".into(),
+                    "refusing to copy a file over a symlink/reparse point".into(),
                 ));
             }
 
@@ -1168,10 +1229,6 @@ async fn copy_dir_missing_recursive_async(src: &Path, dest: &Path) -> Result<(),
             if file_type.is_file() {
                 let _ = tokio::fs::copy(&src_path, &dest_path).await?;
                 continue;
-            }
-
-            if file_type.is_symlink() {
-                return Err(SvnError::InvalidPath("refusing to copy a symlink".into()));
             }
 
             return Err(SvnError::InvalidPath(
@@ -1244,6 +1301,81 @@ mod tests {
             let outside = tempfile::tempdir().unwrap();
 
             symlink(outside.path(), root.join("trunk")).unwrap();
+
+            let mut editor = TokioFsEditor::new(root);
+            editor
+                .on_event(EditorEvent::OpenRoot {
+                    rev: None,
+                    token: "d0".to_string(),
+                })
+                .await
+                .unwrap();
+
+            let err = editor
+                .on_event(EditorEvent::AddFile {
+                    path: "trunk/hello.txt".to_string(),
+                    dir_token: "d0".to_string(),
+                    file_token: "f1".to_string(),
+                    copy_from: None,
+                })
+                .await
+                .unwrap_err();
+            assert!(matches!(err, SvnError::InvalidPath(_)));
+        });
+    }
+
+    #[cfg(windows)]
+    fn try_create_junction(link: &Path, target: &Path) -> bool {
+        use std::process::Command;
+
+        let cmd = format!("mklink /J \"{}\" \"{}\"", link.display(), target.display());
+        let Ok(out) = Command::new("cmd").args(["/C", &cmd]).output() else {
+            return false;
+        };
+        out.status.success()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn fs_editor_rejects_junction_parent_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let outside = tempfile::tempdir().unwrap();
+
+        if !try_create_junction(&root.join("trunk"), outside.path()) {
+            return;
+        }
+
+        let mut editor = FsEditor::new(root);
+        editor
+            .on_event(EditorEvent::OpenRoot {
+                rev: None,
+                token: "d0".to_string(),
+            })
+            .unwrap();
+
+        let err = editor
+            .on_event(EditorEvent::AddFile {
+                path: "trunk/hello.txt".to_string(),
+                dir_token: "d0".to_string(),
+                file_token: "f1".to_string(),
+                copy_from: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, SvnError::InvalidPath(_)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tokio_fs_editor_rejects_junction_parent_dir() {
+        run_async(async {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().to_path_buf();
+            let outside = tempfile::tempdir().unwrap();
+
+            if !try_create_junction(&root.join("trunk"), outside.path()) {
+                return;
+            }
 
             let mut editor = TokioFsEditor::new(root);
             editor
