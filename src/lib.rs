@@ -81,7 +81,10 @@ pub use editor::{
 };
 pub use error::{ServerError, ServerErrorItem, SvnError};
 pub use export::{FsEditor, TokioFsEditor};
-pub use pool::{PooledSession, SessionPool};
+pub use pool::{
+    PooledSession, SessionPool, SessionPoolConfig, SessionPoolHealthCheck, SessionPoolKey,
+    SessionPools,
+};
 pub use textdelta::{
     RecordedTextDelta, TextDeltaApplier, TextDeltaApplierSync, TextDeltaRecorder, apply_textdelta,
     apply_textdelta_sync,

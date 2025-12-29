@@ -95,6 +95,11 @@ impl RaSvnClient {
         self.username.as_deref()
     }
 
+    /// Returns the configured password, if any.
+    pub(crate) fn password(&self) -> Option<&str> {
+        self.password.as_deref()
+    }
+
     /// Returns the configured connect timeout.
     pub fn connect_timeout(&self) -> Duration {
         self.connect_timeout
