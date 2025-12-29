@@ -56,7 +56,7 @@
 //!
 //! For raw wire protocol items, see [`raw::SvnItem`].
 
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(unsafe_code)]
 
 mod client;
