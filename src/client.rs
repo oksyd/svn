@@ -12,7 +12,8 @@ use tracing::debug;
 use crate::path::{validate_rel_dir_path, validate_rel_path};
 use crate::rasvn::conn::{RaSvnConnection, RaSvnConnectionConfig};
 use crate::rasvn::edit::{
-    drive_editor, drive_editor_async, encode_editor_command, parse_failure, send_report,
+    EditorDriveStatus, drive_editor, drive_editor_async, encode_editor_command, parse_failure,
+    send_report,
 };
 use crate::rasvn::parse::{
     opt_tuple_wordish, parse_commit_info, parse_file_rev_entry, parse_get_dir_listing,
@@ -1005,6 +1006,7 @@ impl RaSvnSession {
         let recurse = matches!(options.depth, Depth::Immediates | Depth::Infinity);
 
         self.ensure_connected().await?;
+        let mut drop_conn = false;
         let result = async {
             let conn = self.conn_mut()?;
             let rev_tuple = match options.rev {
@@ -1023,13 +1025,29 @@ impl RaSvnSession {
             conn.handle_auth_request().await?;
             send_report(conn, report).await?;
             conn.handle_auth_request().await?;
-            let _ = drive_editor(conn, Some(handler), false).await?;
-            let response = conn.read_command_response().await?;
-            let _ = response.success_params("update")?;
-            Ok(())
+            let status = drive_editor(conn, Some(handler), false).await?;
+            match status {
+                EditorDriveStatus::Completed => {
+                    let response = conn.read_command_response().await?;
+                    let _ = response.success_params("update")?;
+                    Ok(())
+                }
+                EditorDriveStatus::Aborted(err) => {
+                    if let Err(resp_err) = conn.read_command_response().await {
+                        drop_conn = true;
+                        debug!(
+                            error = %resp_err,
+                            "failed to read command response after aborted editor drive"
+                        );
+                    }
+                    Err(err)
+                }
+            }
         }
         .await;
-        if let Err(err) = &result
+        if drop_conn {
+            self.conn = None;
+        } else if let Err(err) = &result
             && should_drop_connection(err)
         {
             self.conn = None;
@@ -1053,6 +1071,7 @@ impl RaSvnSession {
         let recurse = matches!(options.depth, Depth::Immediates | Depth::Infinity);
 
         self.ensure_connected().await?;
+        let mut drop_conn = false;
         let result = async {
             let conn = self.conn_mut()?;
             let rev_tuple = match options.rev {
@@ -1071,13 +1090,29 @@ impl RaSvnSession {
             conn.handle_auth_request().await?;
             send_report(conn, report).await?;
             conn.handle_auth_request().await?;
-            let _ = drive_editor_async(conn, Some(handler), false).await?;
-            let response = conn.read_command_response().await?;
-            let _ = response.success_params("update")?;
-            Ok(())
+            let status = drive_editor_async(conn, Some(handler), false).await?;
+            match status {
+                EditorDriveStatus::Completed => {
+                    let response = conn.read_command_response().await?;
+                    let _ = response.success_params("update")?;
+                    Ok(())
+                }
+                EditorDriveStatus::Aborted(err) => {
+                    if let Err(resp_err) = conn.read_command_response().await {
+                        drop_conn = true;
+                        debug!(
+                            error = %resp_err,
+                            "failed to read command response after aborted editor drive"
+                        );
+                    }
+                    Err(err)
+                }
+            }
         }
         .await;
-        if let Err(err) = &result
+        if drop_conn {
+            self.conn = None;
+        } else if let Err(err) = &result
             && should_drop_connection(err)
         {
             self.conn = None;
@@ -1100,6 +1135,7 @@ impl RaSvnSession {
         let recurse = matches!(options.depth, Depth::Immediates | Depth::Infinity);
 
         self.ensure_connected().await?;
+        let mut drop_conn = false;
         let result = async {
             let conn = self.conn_mut()?;
             let rev_tuple = match options.rev {
@@ -1119,13 +1155,29 @@ impl RaSvnSession {
             conn.handle_auth_request().await?;
             send_report(conn, report).await?;
             conn.handle_auth_request().await?;
-            let _ = drive_editor(conn, Some(handler), false).await?;
-            let response = conn.read_command_response().await?;
-            let _ = response.success_params("switch")?;
-            Ok(())
+            let status = drive_editor(conn, Some(handler), false).await?;
+            match status {
+                EditorDriveStatus::Completed => {
+                    let response = conn.read_command_response().await?;
+                    let _ = response.success_params("switch")?;
+                    Ok(())
+                }
+                EditorDriveStatus::Aborted(err) => {
+                    if let Err(resp_err) = conn.read_command_response().await {
+                        drop_conn = true;
+                        debug!(
+                            error = %resp_err,
+                            "failed to read command response after aborted editor drive"
+                        );
+                    }
+                    Err(err)
+                }
+            }
         }
         .await;
-        if let Err(err) = &result
+        if drop_conn {
+            self.conn = None;
+        } else if let Err(err) = &result
             && should_drop_connection(err)
         {
             self.conn = None;
@@ -1149,6 +1201,7 @@ impl RaSvnSession {
         let recurse = matches!(options.depth, Depth::Immediates | Depth::Infinity);
 
         self.ensure_connected().await?;
+        let mut drop_conn = false;
         let result = async {
             let conn = self.conn_mut()?;
             let rev_tuple = match options.rev {
@@ -1168,13 +1221,29 @@ impl RaSvnSession {
             conn.handle_auth_request().await?;
             send_report(conn, report).await?;
             conn.handle_auth_request().await?;
-            let _ = drive_editor_async(conn, Some(handler), false).await?;
-            let response = conn.read_command_response().await?;
-            let _ = response.success_params("switch")?;
-            Ok(())
+            let status = drive_editor_async(conn, Some(handler), false).await?;
+            match status {
+                EditorDriveStatus::Completed => {
+                    let response = conn.read_command_response().await?;
+                    let _ = response.success_params("switch")?;
+                    Ok(())
+                }
+                EditorDriveStatus::Aborted(err) => {
+                    if let Err(resp_err) = conn.read_command_response().await {
+                        drop_conn = true;
+                        debug!(
+                            error = %resp_err,
+                            "failed to read command response after aborted editor drive"
+                        );
+                    }
+                    Err(err)
+                }
+            }
         }
         .await;
-        if let Err(err) = &result
+        if drop_conn {
+            self.conn = None;
+        } else if let Err(err) = &result
             && should_drop_connection(err)
         {
             self.conn = None;
@@ -1197,6 +1266,7 @@ impl RaSvnSession {
         let recurse = matches!(options.depth, Depth::Immediates | Depth::Infinity);
 
         self.ensure_connected().await?;
+        let mut drop_conn = false;
         let result = async {
             let conn = self.conn_mut()?;
             let rev_tuple = match options.rev {
@@ -1213,13 +1283,29 @@ impl RaSvnSession {
             conn.handle_auth_request().await?;
             send_report(conn, report).await?;
             conn.handle_auth_request().await?;
-            let _ = drive_editor(conn, Some(handler), false).await?;
-            let response = conn.read_command_response().await?;
-            let _ = response.success_params("status")?;
-            Ok(())
+            let status = drive_editor(conn, Some(handler), false).await?;
+            match status {
+                EditorDriveStatus::Completed => {
+                    let response = conn.read_command_response().await?;
+                    let _ = response.success_params("status")?;
+                    Ok(())
+                }
+                EditorDriveStatus::Aborted(err) => {
+                    if let Err(resp_err) = conn.read_command_response().await {
+                        drop_conn = true;
+                        debug!(
+                            error = %resp_err,
+                            "failed to read command response after aborted editor drive"
+                        );
+                    }
+                    Err(err)
+                }
+            }
         }
         .await;
-        if let Err(err) = &result
+        if drop_conn {
+            self.conn = None;
+        } else if let Err(err) = &result
             && should_drop_connection(err)
         {
             self.conn = None;
@@ -1243,6 +1329,7 @@ impl RaSvnSession {
         let recurse = matches!(options.depth, Depth::Immediates | Depth::Infinity);
 
         self.ensure_connected().await?;
+        let mut drop_conn = false;
         let result = async {
             let conn = self.conn_mut()?;
             let rev_tuple = match options.rev {
@@ -1259,13 +1346,29 @@ impl RaSvnSession {
             conn.handle_auth_request().await?;
             send_report(conn, report).await?;
             conn.handle_auth_request().await?;
-            let _ = drive_editor_async(conn, Some(handler), false).await?;
-            let response = conn.read_command_response().await?;
-            let _ = response.success_params("status")?;
-            Ok(())
+            let status = drive_editor_async(conn, Some(handler), false).await?;
+            match status {
+                EditorDriveStatus::Completed => {
+                    let response = conn.read_command_response().await?;
+                    let _ = response.success_params("status")?;
+                    Ok(())
+                }
+                EditorDriveStatus::Aborted(err) => {
+                    if let Err(resp_err) = conn.read_command_response().await {
+                        drop_conn = true;
+                        debug!(
+                            error = %resp_err,
+                            "failed to read command response after aborted editor drive"
+                        );
+                    }
+                    Err(err)
+                }
+            }
         }
         .await;
-        if let Err(err) = &result
+        if drop_conn {
+            self.conn = None;
+        } else if let Err(err) = &result
             && should_drop_connection(err)
         {
             self.conn = None;
@@ -1288,6 +1391,7 @@ impl RaSvnSession {
         let recurse = matches!(options.depth, Depth::Immediates | Depth::Infinity);
 
         self.ensure_connected().await?;
+        let mut drop_conn = false;
         let result = async {
             let conn = self.conn_mut()?;
             let rev_tuple = match options.rev {
@@ -1307,13 +1411,29 @@ impl RaSvnSession {
             conn.handle_auth_request().await?;
             send_report(conn, report).await?;
             conn.handle_auth_request().await?;
-            let _ = drive_editor(conn, Some(handler), false).await?;
-            let response = conn.read_command_response().await?;
-            let _ = response.success_params("diff")?;
-            Ok(())
+            let status = drive_editor(conn, Some(handler), false).await?;
+            match status {
+                EditorDriveStatus::Completed => {
+                    let response = conn.read_command_response().await?;
+                    let _ = response.success_params("diff")?;
+                    Ok(())
+                }
+                EditorDriveStatus::Aborted(err) => {
+                    if let Err(resp_err) = conn.read_command_response().await {
+                        drop_conn = true;
+                        debug!(
+                            error = %resp_err,
+                            "failed to read command response after aborted editor drive"
+                        );
+                    }
+                    Err(err)
+                }
+            }
         }
         .await;
-        if let Err(err) = &result
+        if drop_conn {
+            self.conn = None;
+        } else if let Err(err) = &result
             && should_drop_connection(err)
         {
             self.conn = None;
@@ -1337,6 +1457,7 @@ impl RaSvnSession {
         let recurse = matches!(options.depth, Depth::Immediates | Depth::Infinity);
 
         self.ensure_connected().await?;
+        let mut drop_conn = false;
         let result = async {
             let conn = self.conn_mut()?;
             let rev_tuple = match options.rev {
@@ -1356,13 +1477,29 @@ impl RaSvnSession {
             conn.handle_auth_request().await?;
             send_report(conn, report).await?;
             conn.handle_auth_request().await?;
-            let _ = drive_editor_async(conn, Some(handler), false).await?;
-            let response = conn.read_command_response().await?;
-            let _ = response.success_params("diff")?;
-            Ok(())
+            let status = drive_editor_async(conn, Some(handler), false).await?;
+            match status {
+                EditorDriveStatus::Completed => {
+                    let response = conn.read_command_response().await?;
+                    let _ = response.success_params("diff")?;
+                    Ok(())
+                }
+                EditorDriveStatus::Aborted(err) => {
+                    if let Err(resp_err) = conn.read_command_response().await {
+                        drop_conn = true;
+                        debug!(
+                            error = %resp_err,
+                            "failed to read command response after aborted editor drive"
+                        );
+                    }
+                    Err(err)
+                }
+            }
         }
         .await;
-        if let Err(err) = &result
+        if drop_conn {
+            self.conn = None;
+        } else if let Err(err) = &result
             && should_drop_connection(err)
         {
             self.conn = None;
@@ -1377,6 +1514,7 @@ impl RaSvnSession {
         handler: &mut dyn EditorEventHandler,
     ) -> Result<(), SvnError> {
         self.ensure_connected().await?;
+        let mut drop_conn = false;
         let result = async {
             let conn = self.conn_mut()?;
             let params = SvnItem::List(vec![
@@ -1386,13 +1524,29 @@ impl RaSvnSession {
             ]);
             conn.send_command("replay", params).await?;
             conn.handle_auth_request().await?;
-            let _ = drive_editor(conn, Some(handler), true).await?;
-            let response = conn.read_command_response().await?;
-            let _ = response.success_params("replay")?;
-            Ok(())
+            let status = drive_editor(conn, Some(handler), true).await?;
+            match status {
+                EditorDriveStatus::Completed => {
+                    let response = conn.read_command_response().await?;
+                    let _ = response.success_params("replay")?;
+                    Ok(())
+                }
+                EditorDriveStatus::Aborted(err) => {
+                    if let Err(resp_err) = conn.read_command_response().await {
+                        drop_conn = true;
+                        debug!(
+                            error = %resp_err,
+                            "failed to read command response after aborted editor drive"
+                        );
+                    }
+                    Err(err)
+                }
+            }
         }
         .await;
-        if let Err(err) = &result
+        if drop_conn {
+            self.conn = None;
+        } else if let Err(err) = &result
             && should_drop_connection(err)
         {
             self.conn = None;
@@ -1407,6 +1561,7 @@ impl RaSvnSession {
         handler: &mut dyn AsyncEditorEventHandler,
     ) -> Result<(), SvnError> {
         self.ensure_connected().await?;
+        let mut drop_conn = false;
         let result = async {
             let conn = self.conn_mut()?;
             let params = SvnItem::List(vec![
@@ -1416,13 +1571,29 @@ impl RaSvnSession {
             ]);
             conn.send_command("replay", params).await?;
             conn.handle_auth_request().await?;
-            let _ = drive_editor_async(conn, Some(handler), true).await?;
-            let response = conn.read_command_response().await?;
-            let _ = response.success_params("replay")?;
-            Ok(())
+            let status = drive_editor_async(conn, Some(handler), true).await?;
+            match status {
+                EditorDriveStatus::Completed => {
+                    let response = conn.read_command_response().await?;
+                    let _ = response.success_params("replay")?;
+                    Ok(())
+                }
+                EditorDriveStatus::Aborted(err) => {
+                    if let Err(resp_err) = conn.read_command_response().await {
+                        drop_conn = true;
+                        debug!(
+                            error = %resp_err,
+                            "failed to read command response after aborted editor drive"
+                        );
+                    }
+                    Err(err)
+                }
+            }
         }
         .await;
-        if let Err(err) = &result
+        if drop_conn {
+            self.conn = None;
+        } else if let Err(err) = &result
             && should_drop_connection(err)
         {
             self.conn = None;
@@ -1485,9 +1656,9 @@ impl RaSvnSession {
                     }
                 }
 
-                let aborted = drive_editor(conn, Some(handler), true).await?;
-                if aborted {
-                    return Err(SvnError::Protocol("error while replaying commit".into()));
+                let status = drive_editor(conn, Some(handler), true).await?;
+                if let EditorDriveStatus::Aborted(err) = status {
+                    return Err(err);
                 }
             }
 
@@ -1557,9 +1728,9 @@ impl RaSvnSession {
                     }
                 }
 
-                let aborted = drive_editor_async(conn, Some(handler), true).await?;
-                if aborted {
-                    return Err(SvnError::Protocol("error while replaying commit".into()));
+                let status = drive_editor_async(conn, Some(handler), true).await?;
+                if let EditorDriveStatus::Aborted(err) = status {
+                    return Err(err);
                 }
             }
 
@@ -4084,6 +4255,115 @@ mod tests {
 
             server_task.await.unwrap();
             assert_eq!(handler.events, vec![EditorEvent::CloseEdit]);
+        });
+    }
+
+    #[test]
+    fn update_returns_handler_error_even_if_server_succeeds() {
+        run_async(async {
+            let (mut session, mut server) = connected_session().await;
+
+            struct Failer;
+
+            impl EditorEventHandler for Failer {
+                fn on_event(&mut self, event: EditorEvent) -> Result<(), SvnError> {
+                    if matches!(event, EditorEvent::CloseEdit) {
+                        return Err(SvnError::Protocol("boom".into()));
+                    }
+                    Ok(())
+                }
+            }
+
+            let report = Report {
+                commands: vec![
+                    ReportCommand::SetPath {
+                        path: "".to_string(),
+                        rev: 0,
+                        start_empty: true,
+                        lock_token: None,
+                        depth: Depth::Infinity,
+                    },
+                    ReportCommand::FinishReport,
+                ],
+            };
+
+            let expected_update = SvnItem::List(vec![
+                SvnItem::Word("update".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::List(Vec::new()),
+                    SvnItem::String(Vec::new()),
+                    SvnItem::Bool(true),
+                    SvnItem::Word("infinity".to_string()),
+                    SvnItem::Bool(false),
+                    SvnItem::Bool(false),
+                ]),
+            ]);
+            let expected_set_path = SvnItem::List(vec![
+                SvnItem::Word("set-path".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::String(Vec::new()),
+                    SvnItem::Number(0),
+                    SvnItem::Bool(true),
+                    SvnItem::List(Vec::new()),
+                    SvnItem::Word("infinity".to_string()),
+                ]),
+            ]);
+            let expected_finish_report = SvnItem::List(vec![
+                SvnItem::Word("finish-report".to_string()),
+                SvnItem::List(Vec::new()),
+            ]);
+            let expected_failure = SvnItem::List(vec![
+                SvnItem::Word("failure".to_string()),
+                SvnItem::List(vec![SvnItem::List(vec![
+                    SvnItem::Number(1),
+                    SvnItem::String(b"protocol error: boom".to_vec()),
+                    SvnItem::String(Vec::new()),
+                    SvnItem::Number(0),
+                ])]),
+            ]);
+            let expected_cmd_success = SvnItem::List(vec![
+                SvnItem::Word("success".to_string()),
+                SvnItem::List(Vec::new()),
+            ]);
+
+            let server_task = tokio::spawn(async move {
+                assert_eq!(read_line(&mut server).await, encode_line(&expected_update));
+                write_item_line(&mut server, &auth_request("realm-1")).await;
+
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_line(&expected_set_path)
+                );
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_line(&expected_finish_report)
+                );
+                write_item_line(&mut server, &auth_request("realm-2")).await;
+
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("close-edit".to_string()),
+                        SvnItem::List(Vec::new()),
+                    ]),
+                )
+                .await;
+
+                let failure_line = read_line(&mut server).await;
+                write_item_line(&mut server, &expected_cmd_success).await;
+                failure_line
+            });
+
+            let mut handler = Failer;
+            let options = UpdateOptions::new("", Depth::Infinity).without_copyfrom_args();
+            let err = session
+                .update(&options, &report, &mut handler)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, SvnError::Protocol(msg) if msg == "boom"));
+
+            let failure_line = server_task.await.unwrap();
+            assert_eq!(failure_line, encode_line(&expected_failure));
         });
     }
 

@@ -1,4 +1,4 @@
-use crate::path::{validate_rel_dir_path_ref, validate_rel_path_ref};
+use crate::path::{validate_rel_dir_path_ref, validate_rel_path, validate_rel_path_ref};
 use crate::rasvn::parse::{parse_proplist, parse_server_error};
 use crate::raw::SvnItem;
 use crate::{
@@ -345,11 +345,17 @@ pub(crate) fn encode_editor_command(
     Ok(())
 }
 
+#[derive(Debug)]
+pub(crate) enum EditorDriveStatus {
+    Completed,
+    Aborted(SvnError),
+}
+
 pub(crate) async fn drive_editor(
     conn: &mut RaSvnConnection,
     mut handler: Option<&mut dyn EditorEventHandler>,
     for_replay: bool,
-) -> Result<bool, SvnError> {
+) -> Result<EditorDriveStatus, SvnError> {
     loop {
         let (cmd, params_item) = read_command_item(conn).await?;
         let params = params_item.as_list().unwrap_or_default();
@@ -367,39 +373,39 @@ pub(crate) async fn drive_editor(
                 if let Some(handler) = handler.as_deref_mut()
                     && let Err(err) = handler.on_event(EditorEvent::FinishReplay)
                 {
-                    return handle_editor_consumer_error(conn, &err, false).await;
+                    return handle_editor_consumer_error(conn, err, false).await;
                 }
-                return Ok(false);
+                return Ok(EditorDriveStatus::Completed);
             }
             "close-edit" => {
                 if let Some(handler) = handler.as_deref_mut()
                     && let Err(err) = handler.on_event(EditorEvent::CloseEdit)
                 {
-                    return handle_editor_consumer_error(conn, &err, false).await;
+                    return handle_editor_consumer_error(conn, err, false).await;
                 }
                 conn.write_cmd_success().await?;
-                return Ok(false);
+                return Ok(EditorDriveStatus::Completed);
             }
             "abort-edit" => {
                 if let Some(handler) = handler.as_deref_mut()
                     && let Err(err) = handler.on_event(EditorEvent::AbortEdit)
                 {
-                    return handle_editor_consumer_error(conn, &err, false).await;
+                    return handle_editor_consumer_error(conn, err, false).await;
                 }
                 conn.write_cmd_success().await?;
-                return Ok(false);
+                return Ok(EditorDriveStatus::Completed);
             }
             _ => {}
         }
 
         let event = match parse_editor_event(&cmd, &params) {
             Ok(event) => event,
-            Err(err) => return handle_editor_consumer_error(conn, &err, true).await,
+            Err(err) => return handle_editor_consumer_error(conn, err, true).await,
         };
         if let Some(handler) = handler.as_deref_mut()
             && let Err(err) = handler.on_event(event)
         {
-            return handle_editor_consumer_error(conn, &err, true).await;
+            return handle_editor_consumer_error(conn, err, true).await;
         }
     }
 }
@@ -408,7 +414,7 @@ pub(crate) async fn drive_editor_async(
     conn: &mut RaSvnConnection,
     mut handler: Option<&mut dyn AsyncEditorEventHandler>,
     for_replay: bool,
-) -> Result<bool, SvnError> {
+) -> Result<EditorDriveStatus, SvnError> {
     loop {
         let (cmd, params_item) = read_command_item(conn).await?;
         let params = params_item.as_list().unwrap_or_default();
@@ -426,53 +432,53 @@ pub(crate) async fn drive_editor_async(
                 if let Some(handler) = handler.as_deref_mut()
                     && let Err(err) = handler.on_event(EditorEvent::FinishReplay).await
                 {
-                    return handle_editor_consumer_error(conn, &err, false).await;
+                    return handle_editor_consumer_error(conn, err, false).await;
                 }
-                return Ok(false);
+                return Ok(EditorDriveStatus::Completed);
             }
             "close-edit" => {
                 if let Some(handler) = handler.as_deref_mut()
                     && let Err(err) = handler.on_event(EditorEvent::CloseEdit).await
                 {
-                    return handle_editor_consumer_error(conn, &err, false).await;
+                    return handle_editor_consumer_error(conn, err, false).await;
                 }
                 conn.write_cmd_success().await?;
-                return Ok(false);
+                return Ok(EditorDriveStatus::Completed);
             }
             "abort-edit" => {
                 if let Some(handler) = handler.as_deref_mut()
                     && let Err(err) = handler.on_event(EditorEvent::AbortEdit).await
                 {
-                    return handle_editor_consumer_error(conn, &err, false).await;
+                    return handle_editor_consumer_error(conn, err, false).await;
                 }
                 conn.write_cmd_success().await?;
-                return Ok(false);
+                return Ok(EditorDriveStatus::Completed);
             }
             _ => {}
         }
 
         let event = match parse_editor_event(&cmd, &params) {
             Ok(event) => event,
-            Err(err) => return handle_editor_consumer_error(conn, &err, true).await,
+            Err(err) => return handle_editor_consumer_error(conn, err, true).await,
         };
         if let Some(handler) = handler.as_deref_mut()
             && let Err(err) = handler.on_event(event).await
         {
-            return handle_editor_consumer_error(conn, &err, true).await;
+            return handle_editor_consumer_error(conn, err, true).await;
         }
     }
 }
 
 async fn handle_editor_consumer_error(
     conn: &mut RaSvnConnection,
-    err: &SvnError,
+    err: SvnError,
     drain: bool,
-) -> Result<bool, SvnError> {
-    let done = conn.write_cmd_failure_early(err).await?;
+) -> Result<EditorDriveStatus, SvnError> {
+    let done = conn.write_cmd_failure_early(&err).await?;
     if drain && !done {
         drain_until_abort_or_success(conn).await?;
     }
-    Ok(true)
+    Ok(EditorDriveStatus::Aborted(err))
 }
 
 async fn drain_until_abort_or_success(conn: &mut RaSvnConnection) -> Result<(), SvnError> {
@@ -540,9 +546,7 @@ fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<EditorEvent, SvnE
             let rev = opt_tuple_u64(&params[1])
                 .ok_or_else(|| SvnError::Protocol("delete-entry missing rev".into()))?;
             Ok(EditorEvent::DeleteEntry {
-                path: req_string(&params[0], "delete-entry path")?
-                    .trim_start_matches('/')
-                    .to_string(),
+                path: req_rel_path(&params[0], "delete-entry path")?,
                 rev,
                 dir_token: req_string(&params[2], "delete-entry dir token")?,
             })
@@ -552,12 +556,13 @@ fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<EditorEvent, SvnE
                 return Err(SvnError::Protocol("add-dir params too short".into()));
             }
             Ok(EditorEvent::AddDir {
-                path: req_string(&params[0], "add-dir path")?
-                    .trim_start_matches('/')
-                    .to_string(),
+                path: req_rel_path(&params[0], "add-dir path")?,
                 parent_token: req_string(&params[1], "add-dir parent token")?,
                 child_token: req_string(&params[2], "add-dir child token")?,
-                copy_from: params.get(3).and_then(opt_tuple_copyfrom),
+                copy_from: match params.get(3) {
+                    Some(item) => opt_tuple_copyfrom(item)?,
+                    None => None,
+                },
             })
         }
         "open-dir" => {
@@ -567,9 +572,7 @@ fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<EditorEvent, SvnE
             let rev = opt_tuple_u64(&params[3])
                 .ok_or_else(|| SvnError::Protocol("open-dir missing rev".into()))?;
             Ok(EditorEvent::OpenDir {
-                path: req_string(&params[0], "open-dir path")?
-                    .trim_start_matches('/')
-                    .to_string(),
+                path: req_rel_path(&params[0], "open-dir path")?,
                 parent_token: req_string(&params[1], "open-dir parent token")?,
                 child_token: req_string(&params[2], "open-dir child token")?,
                 rev,
@@ -599,9 +602,7 @@ fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<EditorEvent, SvnE
                 return Err(SvnError::Protocol("absent-dir params too short".into()));
             }
             Ok(EditorEvent::AbsentDir {
-                path: req_string(&params[0], "absent-dir path")?
-                    .trim_start_matches('/')
-                    .to_string(),
+                path: req_rel_path(&params[0], "absent-dir path")?,
                 parent_token: req_string(&params[1], "absent-dir parent token")?,
             })
         }
@@ -610,12 +611,13 @@ fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<EditorEvent, SvnE
                 return Err(SvnError::Protocol("add-file params too short".into()));
             }
             Ok(EditorEvent::AddFile {
-                path: req_string(&params[0], "add-file path")?
-                    .trim_start_matches('/')
-                    .to_string(),
+                path: req_rel_path(&params[0], "add-file path")?,
                 dir_token: req_string(&params[1], "add-file dir token")?,
                 file_token: req_string(&params[2], "add-file file token")?,
-                copy_from: params.get(3).and_then(opt_tuple_copyfrom),
+                copy_from: match params.get(3) {
+                    Some(item) => opt_tuple_copyfrom(item)?,
+                    None => None,
+                },
             })
         }
         "open-file" => {
@@ -625,9 +627,7 @@ fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<EditorEvent, SvnE
             let rev = opt_tuple_u64(&params[3])
                 .ok_or_else(|| SvnError::Protocol("open-file missing rev".into()))?;
             Ok(EditorEvent::OpenFile {
-                path: req_string(&params[0], "open-file path")?
-                    .trim_start_matches('/')
-                    .to_string(),
+                path: req_rel_path(&params[0], "open-file path")?,
                 dir_token: req_string(&params[1], "open-file dir token")?,
                 file_token: req_string(&params[2], "open-file file token")?,
                 rev,
@@ -688,9 +688,7 @@ fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<EditorEvent, SvnE
                 return Err(SvnError::Protocol("absent-file params too short".into()));
             }
             Ok(EditorEvent::AbsentFile {
-                path: req_string(&params[0], "absent-file path")?
-                    .trim_start_matches('/')
-                    .to_string(),
+                path: req_rel_path(&params[0], "absent-file path")?,
                 parent_token: req_string(&params[1], "absent-file parent token")?,
             })
         }
@@ -705,6 +703,11 @@ fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<EditorEvent, SvnE
 fn req_string(item: &SvnItem, ctx: &str) -> Result<String, SvnError> {
     item.as_string()
         .ok_or_else(|| SvnError::Protocol(format!("{ctx} not a string")))
+}
+
+fn req_rel_path(item: &SvnItem, ctx: &str) -> Result<String, SvnError> {
+    let raw = req_string(item, ctx)?;
+    validate_rel_path(&raw)
 }
 
 fn req_bytes(item: &SvnItem, ctx: &str) -> Result<Vec<u8>, SvnError> {
@@ -733,16 +736,24 @@ fn opt_tuple_bytes(item: &SvnItem) -> Option<Vec<u8>> {
     }
 }
 
-fn opt_tuple_copyfrom(item: &SvnItem) -> Option<(String, u64)> {
-    let items = item.as_list()?;
+fn opt_tuple_copyfrom(item: &SvnItem) -> Result<Option<(String, u64)>, SvnError> {
+    let Some(items) = item.as_list() else {
+        return Ok(None);
+    };
+    if items.is_empty() {
+        return Ok(None);
+    }
     if items.len() < 2 {
-        return None;
+        return Err(SvnError::Protocol("copy-from tuple too short".into()));
     }
     let path = items[0]
         .as_string()
-        .map(|p| p.trim_start_matches('/').to_string())?;
-    let rev = items[1].as_u64()?;
-    Some((path, rev))
+        .ok_or_else(|| SvnError::Protocol("copy-from path not a string".into()))?;
+    let rev = items[1]
+        .as_u64()
+        .ok_or_else(|| SvnError::Protocol("copy-from rev not a number".into()))?;
+    let path = validate_rel_path(&path)?;
+    Ok(Some((path, rev)))
 }
 
 #[cfg(test)]
@@ -865,6 +876,66 @@ mod tests {
     }
 
     #[test]
+    fn send_report_normalizes_paths() {
+        run_async(async {
+            let (mut conn, mut server) = connected_conn().await;
+            let mut report = Report::new();
+            report
+                .push(ReportCommand::SetPath {
+                    path: "//trunk\\\\sub//./".to_string(),
+                    rev: 10,
+                    start_empty: true,
+                    lock_token: None,
+                    depth: Depth::Infinity,
+                })
+                .finish();
+
+            send_report(&mut conn, &report).await.unwrap();
+
+            let expected_set_path = SvnItem::List(vec![
+                SvnItem::Word("set-path".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::String(b"trunk/sub".to_vec()),
+                    SvnItem::Number(10),
+                    SvnItem::Bool(true),
+                    SvnItem::List(Vec::new()),
+                    SvnItem::Word("infinity".to_string()),
+                ]),
+            ]);
+            let expected_finish = SvnItem::List(vec![
+                SvnItem::Word("finish-report".to_string()),
+                SvnItem::List(Vec::new()),
+            ]);
+
+            assert_eq!(
+                read_line(&mut server).await,
+                encode_line(&expected_set_path)
+            );
+            assert_eq!(read_line(&mut server).await, encode_line(&expected_finish));
+        });
+    }
+
+    #[test]
+    fn send_report_rejects_unsafe_paths() {
+        run_async(async {
+            let (mut conn, _server) = connected_conn().await;
+            let mut report = Report::new();
+            report
+                .push(ReportCommand::SetPath {
+                    path: "trunk/../x".to_string(),
+                    rev: 1,
+                    start_empty: true,
+                    lock_token: None,
+                    depth: Depth::Infinity,
+                })
+                .finish();
+
+            let err = send_report(&mut conn, &report).await.unwrap_err();
+            assert!(matches!(err, SvnError::InvalidPath(_)));
+        });
+    }
+
+    #[test]
     fn send_report_requires_terminator() {
         run_async(async {
             let (mut conn, _server) = connected_conn().await;
@@ -977,10 +1048,10 @@ mod tests {
             });
 
             let mut handler = Collector { events: Vec::new() };
-            let aborted = drive_editor(&mut conn, Some(&mut handler), false)
+            let status = drive_editor(&mut conn, Some(&mut handler), false)
                 .await
                 .unwrap();
-            assert!(!aborted);
+            assert!(matches!(status, EditorDriveStatus::Completed));
 
             let response_line = server_task.await.unwrap();
             let expected_response = SvnItem::List(vec![
@@ -992,6 +1063,143 @@ mod tests {
                 handler.events,
                 vec![EditorEvent::TargetRev { rev: 42 }, EditorEvent::CloseEdit]
             );
+        });
+    }
+
+    #[test]
+    fn drive_editor_normalizes_paths() {
+        run_async(async {
+            let (mut conn, mut server) = connected_conn().await;
+
+            struct Collector {
+                events: Vec<EditorEvent>,
+            }
+
+            impl EditorEventHandler for Collector {
+                fn on_event(&mut self, event: EditorEvent) -> Result<(), SvnError> {
+                    self.events.push(event);
+                    Ok(())
+                }
+            }
+
+            let delete_entry = SvnItem::List(vec![
+                SvnItem::Word("delete-entry".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::String(b"//trunk\\\\sub//./file.txt".to_vec()),
+                    SvnItem::List(vec![SvnItem::Number(5)]),
+                    SvnItem::String(b"d".to_vec()),
+                ]),
+            ]);
+
+            let server_task = tokio::spawn(async move {
+                write_item_line(&mut server, &delete_entry).await;
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("close-edit".to_string()),
+                        SvnItem::List(Vec::new()),
+                    ]),
+                )
+                .await;
+                read_line(&mut server).await
+            });
+
+            let mut handler = Collector { events: Vec::new() };
+            let status = drive_editor(&mut conn, Some(&mut handler), false)
+                .await
+                .unwrap();
+            assert!(matches!(status, EditorDriveStatus::Completed));
+
+            let response_line = server_task.await.unwrap();
+            let expected_response = SvnItem::List(vec![
+                SvnItem::Word("success".to_string()),
+                SvnItem::List(Vec::new()),
+            ]);
+            assert_eq!(response_line, encode_line(&expected_response));
+            assert_eq!(
+                handler.events,
+                vec![
+                    EditorEvent::DeleteEntry {
+                        path: "trunk/sub/file.txt".to_string(),
+                        rev: 5,
+                        dir_token: "d".to_string(),
+                    },
+                    EditorEvent::CloseEdit
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn drive_editor_rejects_unsafe_paths() {
+        run_async(async {
+            let (mut conn, mut server) = connected_conn().await;
+
+            struct Collector {
+                events: Vec<EditorEvent>,
+            }
+
+            impl EditorEventHandler for Collector {
+                fn on_event(&mut self, event: EditorEvent) -> Result<(), SvnError> {
+                    self.events.push(event);
+                    Ok(())
+                }
+            }
+
+            let expected_failure = SvnItem::List(vec![
+                SvnItem::Word("failure".to_string()),
+                SvnItem::List(vec![SvnItem::List(vec![
+                    SvnItem::Number(1),
+                    SvnItem::String(b"invalid path: unsafe path".to_vec()),
+                    SvnItem::String(Vec::new()),
+                    SvnItem::Number(0),
+                ])]),
+            ]);
+
+            let server_task = tokio::spawn(async move {
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("delete-entry".to_string()),
+                        SvnItem::List(vec![
+                            SvnItem::String(b"trunk/../x".to_vec()),
+                            SvnItem::List(vec![SvnItem::Number(1)]),
+                            SvnItem::String(b"d".to_vec()),
+                        ]),
+                    ]),
+                )
+                .await;
+
+                let failure_line = read_line(&mut server).await;
+
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("abort-edit".to_string()),
+                        SvnItem::List(Vec::new()),
+                    ]),
+                )
+                .await;
+
+                (failure_line, server)
+            });
+
+            let mut handler = Collector { events: Vec::new() };
+            let status = drive_editor(&mut conn, Some(&mut handler), false)
+                .await
+                .unwrap();
+            assert!(matches!(
+                status,
+                EditorDriveStatus::Aborted(SvnError::InvalidPath(_))
+            ));
+
+            let (failure_line, mut server) = server_task.await.unwrap();
+            assert_eq!(failure_line, encode_line(&expected_failure));
+            assert!(handler.events.is_empty());
+
+            let no_response =
+                tokio::time::timeout(Duration::from_millis(50), read_line(&mut server)).await;
+            assert!(no_response.is_err());
         });
     }
 
@@ -1046,10 +1254,13 @@ mod tests {
             });
 
             let mut handler = Failer;
-            let aborted = drive_editor(&mut conn, Some(&mut handler), false)
+            let status = drive_editor(&mut conn, Some(&mut handler), false)
                 .await
                 .unwrap();
-            assert!(aborted);
+            assert!(matches!(
+                status,
+                EditorDriveStatus::Aborted(SvnError::Protocol(msg)) if msg == "boom"
+            ));
 
             let (failure_line, mut server) = server_task.await.unwrap();
             assert_eq!(failure_line, encode_line(&expected_failure));
@@ -1099,10 +1310,13 @@ mod tests {
             });
 
             let mut handler = Failer;
-            let aborted = drive_editor(&mut conn, Some(&mut handler), false)
+            let status = drive_editor(&mut conn, Some(&mut handler), false)
                 .await
                 .unwrap();
-            assert!(aborted);
+            assert!(matches!(
+                status,
+                EditorDriveStatus::Aborted(SvnError::Protocol(msg)) if msg == "boom"
+            ));
 
             let response_line = server_task.await.unwrap();
             assert_eq!(response_line, encode_line(&expected_failure));
@@ -1152,10 +1366,10 @@ mod tests {
             });
 
             let mut handler = Collector { events: Vec::new() };
-            let aborted = drive_editor_async(&mut conn, Some(&mut handler), false)
+            let status = drive_editor_async(&mut conn, Some(&mut handler), false)
                 .await
                 .unwrap();
-            assert!(!aborted);
+            assert!(matches!(status, EditorDriveStatus::Completed));
 
             let response_line = server_task.await.unwrap();
             let expected_response = SvnItem::List(vec![
@@ -1227,10 +1441,13 @@ mod tests {
             });
 
             let mut handler = Failer;
-            let aborted = drive_editor_async(&mut conn, Some(&mut handler), false)
+            let status = drive_editor_async(&mut conn, Some(&mut handler), false)
                 .await
                 .unwrap();
-            assert!(aborted);
+            assert!(matches!(
+                status,
+                EditorDriveStatus::Aborted(SvnError::Protocol(msg)) if msg == "boom"
+            ));
 
             let (failure_line, mut server) = server_task.await.unwrap();
             assert_eq!(failure_line, encode_line(&expected_failure));
@@ -1286,10 +1503,13 @@ mod tests {
             });
 
             let mut handler = Failer;
-            let aborted = drive_editor_async(&mut conn, Some(&mut handler), false)
+            let status = drive_editor_async(&mut conn, Some(&mut handler), false)
                 .await
                 .unwrap();
-            assert!(aborted);
+            assert!(matches!(
+                status,
+                EditorDriveStatus::Aborted(SvnError::Protocol(msg)) if msg == "boom"
+            ));
 
             let response_line = server_task.await.unwrap();
             assert_eq!(response_line, encode_line(&expected_failure));

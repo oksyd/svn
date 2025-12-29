@@ -11,6 +11,7 @@ use crate::editor::{
     AsyncEditorEventHandler, EditorEvent, EditorEventHandler, Report, ReportCommand,
 };
 use crate::options::UpdateOptions;
+use crate::path::validate_rel_dir_path_ref;
 use crate::textdelta::{TextDeltaApplierFile, TextDeltaApplierFileSync};
 use crate::{RaSvnClient, RaSvnSession, SvnError};
 
@@ -785,10 +786,12 @@ fn map_repo_path_to_fs(
     path: &str,
     allow_empty: bool,
 ) -> Result<PathBuf, SvnError> {
-    let mut trimmed = path.trim().trim_start_matches('/');
+    let canonical_path = validate_rel_dir_path_ref(path)?;
+    let mut trimmed = canonical_path.as_ref();
 
     if let Some(prefix) = strip_prefix {
-        let prefix = prefix.trim().trim_matches('/');
+        let canonical_prefix = validate_rel_dir_path_ref(prefix)?;
+        let prefix = canonical_prefix.as_ref();
         if !prefix.is_empty() {
             if trimmed == prefix {
                 trimmed = "";
@@ -807,20 +810,12 @@ fn map_repo_path_to_fs(
         return Err(SvnError::InvalidPath("empty path".into()));
     }
 
-    if trimmed.contains('\\') || trimmed.contains(':') {
+    if trimmed.contains(':') {
         return Err(SvnError::InvalidPath("unsafe path".into()));
     }
 
     let mut out = root.to_path_buf();
     for part in trimmed.split('/') {
-        if part.is_empty()
-            || part == "."
-            || part == ".."
-            || part.contains('\\')
-            || part.contains(':')
-        {
-            return Err(SvnError::InvalidPath("unsafe path".into()));
-        }
         out.push(part);
     }
     Ok(out)
@@ -1257,6 +1252,18 @@ mod tests {
 
     use super::*;
     use std::future::Future;
+
+    #[test]
+    fn map_repo_path_to_fs_normalizes_and_strips_prefix() {
+        let root = Path::new("root");
+
+        let out = map_repo_path_to_fs(root, None, "//trunk\\\\sub//./", true).unwrap();
+        assert_eq!(out, root.join("trunk").join("sub"));
+
+        let out =
+            map_repo_path_to_fs(root, Some("trunk/"), "/trunk//./sub/file.txt", false).unwrap();
+        assert_eq!(out, root.join("sub").join("file.txt"));
+    }
 
     #[test]
     fn fs_editor_rejects_parent_dir_paths() {

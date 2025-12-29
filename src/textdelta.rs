@@ -943,6 +943,7 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
+    use proptest::prelude::*;
     use tokio::io::AsyncWrite;
 
     use super::*;
@@ -997,6 +998,87 @@ mod tests {
         out.extend_from_slice(instructions);
         out.extend_from_slice(new_data);
         out
+    }
+
+    fn split_slices_by_seeds<'a>(bytes: &'a [u8], seeds: &[u8]) -> Vec<&'a [u8]> {
+        if bytes.is_empty() {
+            return vec![bytes];
+        }
+
+        let mut out = Vec::new();
+        let mut start = 0usize;
+        for &seed in seeds {
+            if start == bytes.len() {
+                break;
+            }
+            let remaining = bytes.len() - start;
+            let take = (seed as usize) % (remaining + 1);
+            out.push(&bytes[start..start + take]);
+            start += take;
+        }
+        if start < bytes.len() {
+            out.push(&bytes[start..]);
+        }
+        out
+    }
+
+    fn arb_svndiff_version() -> impl Strategy<Value = EncVersion> {
+        prop_oneof![
+            Just(EncVersion::V0),
+            Just(EncVersion::V1),
+            Just(EncVersion::V2),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 32,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn fulltext_svndiff_applies_via_sync_textdelta(
+            version in arb_svndiff_version(),
+            zlib_level in 0u32..=9u32,
+            window_size in 1usize..=8192,
+            base in prop::collection::vec(any::<u8>(), 0..=1024),
+            contents in prop::collection::vec(any::<u8>(), 0..=16 * 1024),
+            seeds in prop::collection::vec(any::<u8>(), 0..=64),
+        ) {
+            let delta = encode_fulltext_with_options(version, &contents, zlib_level, window_size).unwrap();
+            let chunks = split_slices_by_seeds(&delta, &seeds);
+
+            let mut out = Vec::new();
+            apply_textdelta_sync(&base, chunks.iter().copied(), &mut out).unwrap();
+            assert_eq!(out, contents);
+        }
+
+        #[test]
+        fn truncated_svndiff_is_rejected(
+            version in arb_svndiff_version(),
+            zlib_level in 0u32..=9u32,
+            window_size in 1usize..=8192,
+            contents in prop::collection::vec(any::<u8>(), 0..=16 * 1024),
+        ) {
+            let delta = encode_fulltext_with_options(version, &contents, zlib_level, window_size).unwrap();
+            prop_assume!(delta.len() > 1);
+
+            let mut out = Vec::new();
+            let err = apply_textdelta_sync(&[], [&delta[..delta.len() - 1]], &mut out).unwrap_err();
+            prop_assert!(matches!(err, SvnError::Protocol(_)));
+        }
+
+        #[test]
+        fn apply_textdelta_sync_never_panics_on_random_input(
+            base in prop::collection::vec(any::<u8>(), 0..=256),
+            delta in prop::collection::vec(any::<u8>(), 0..=2048),
+        ) {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut out = Vec::new();
+                let _ = apply_textdelta_sync(&base, [&delta], &mut out);
+            }));
+            prop_assert!(res.is_ok());
+        }
     }
 
     #[test]
