@@ -4,9 +4,13 @@
 //! [`crate::EditorEvent::TextDeltaChunk`]). This module provides a small,
 //! streaming decoder that can apply those chunks to a base file and write the
 //! resulting bytes to an [`tokio::io::AsyncWrite`].
+//!
+//! For integration with synchronous consumers (for example an
+//! [`crate::EditorEventHandler`] that writes to disk), see
+//! [`TextDeltaApplierSync`] / [`apply_textdelta_sync`].
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom, Write};
 
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
@@ -56,7 +60,7 @@ struct WindowHeader {
 
 type ParsedWindow = (SvndiffVersion, WindowHeader, Vec<u8>, Vec<u8>);
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct CursorBuf {
     buf: Vec<u8>,
     start: usize,
@@ -89,7 +93,7 @@ impl CursorBuf {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct SvndiffStream {
     any_input: bool,
     header: [u8; SVNDIFF_HEADER_LEN],
@@ -405,7 +409,16 @@ fn apply_window(
     }
     let source_view = &base[sview_offset..sview_end];
 
-    let mut target = Vec::with_capacity(window.tview_len);
+    apply_window_source(source_view, window.tview_len, instructions, new_data)
+}
+
+fn apply_window_source(
+    source_view: &[u8],
+    tview_len: usize,
+    instructions: &[u8],
+    new_data: &[u8],
+) -> Result<Vec<u8>, SvnError> {
+    let mut target = Vec::with_capacity(tview_len);
     let mut ipos = 0usize;
     let mut npos = 0usize;
 
@@ -439,7 +452,7 @@ fn apply_window(
             .len()
             .checked_add(len)
             .ok_or_else(|| SvnError::Protocol("svndiff target size overflow".into()))?
-            > window.tview_len
+            > tview_len
         {
             return Err(SvnError::Protocol(
                 "svndiff instruction overflows target view".into(),
@@ -456,15 +469,15 @@ fn apply_window(
                 ipos += used;
                 let off = usize::try_from(off)
                     .map_err(|_| SvnError::Protocol("svndiff offset overflows usize".into()))?;
-                if off > window.sview_len
+                if off > source_view.len()
                     || off.checked_add(len).is_none()
-                    || off + len > window.sview_len
+                    || off + len > source_view.len()
                 {
                     return Err(SvnError::Protocol(
                         "svndiff [src] instruction overflows source view".into(),
                     ));
                 }
-                target.extend_from_slice(&source_view[off..off + len]);
+                target.extend_from_slice(&source_view[off..][..len]);
             }
             1 => {
                 let Some((off, used)) = try_decode_uint(&instructions[ipos..])? else {
@@ -501,7 +514,7 @@ fn apply_window(
         }
     }
 
-    if target.len() != window.tview_len {
+    if target.len() != tview_len {
         return Err(SvnError::Protocol(
             "svndiff delta does not fill the target window".into(),
         ));
@@ -574,6 +587,134 @@ where
         applier.push(chunk.as_ref(), out).await?;
     }
     applier.finish(out).await
+}
+
+/// Incrementally applies an svndiff textdelta to a base file, writing to a synchronous
+/// [`std::io::Write`].
+///
+/// This is useful for consumers that can't `.await` inside the callback, such as
+/// [`crate::EditorEventHandler`] implementations.
+pub struct TextDeltaApplierSync<'a> {
+    base: &'a [u8],
+    stream: SvndiffStream,
+}
+
+impl<'a> TextDeltaApplierSync<'a> {
+    /// Creates a new applier for `base`.
+    pub fn new(base: &'a [u8]) -> Self {
+        Self {
+            base,
+            stream: SvndiffStream::default(),
+        }
+    }
+
+    /// Feeds one raw svndiff chunk and writes completed output windows to `out`.
+    pub fn push<W: Write>(&mut self, chunk: &[u8], out: &mut W) -> Result<(), SvnError> {
+        self.stream.push(chunk)?;
+        while let Some((version, window, ins_wire, new_wire)) = self.stream.next_window()? {
+            let instructions = decode_section(version, &ins_wire, MAX_INSTRUCTION_SECTION_LEN)?;
+            let new_data = decode_section(version, &new_wire, DELTA_WINDOW_MAX)?;
+            let data = apply_window(self.base, &window, &instructions, &new_data)?;
+            out.write_all(&data)?;
+        }
+        Ok(())
+    }
+
+    /// Finishes the delta stream.
+    pub fn finish<W: Write>(self, out: &mut W) -> Result<(), SvnError> {
+        if self.stream.is_identity() {
+            out.write_all(self.base)?;
+            return Ok(());
+        }
+        self.stream.finish()
+    }
+}
+
+/// Applies an svndiff textdelta (svndiff0/1/2) to `base` and writes the result to `out`.
+///
+/// This is a convenience wrapper around [`TextDeltaApplierSync`].
+pub fn apply_textdelta_sync<W, I, B>(base: &[u8], chunks: I, out: &mut W) -> Result<(), SvnError>
+where
+    W: Write,
+    I: IntoIterator<Item = B>,
+    B: AsRef<[u8]>,
+{
+    let mut applier = TextDeltaApplierSync::new(base);
+    for chunk in chunks {
+        applier.push(chunk.as_ref(), out)?;
+    }
+    applier.finish(out)
+}
+
+#[derive(Debug)]
+pub(crate) struct TextDeltaApplierFileSync {
+    base: Option<std::fs::File>,
+    base_len: u64,
+    stream: SvndiffStream,
+}
+
+impl TextDeltaApplierFileSync {
+    pub(crate) fn new(base: Option<std::fs::File>) -> Result<Self, SvnError> {
+        let base_len = match base.as_ref() {
+            Some(file) => file.metadata()?.len(),
+            None => 0,
+        };
+        Ok(Self {
+            base,
+            base_len,
+            stream: SvndiffStream::default(),
+        })
+    }
+
+    pub(crate) fn push<W: Write>(&mut self, chunk: &[u8], out: &mut W) -> Result<(), SvnError> {
+        self.stream.push(chunk)?;
+        while let Some((version, window, ins_wire, new_wire)) = self.stream.next_window()? {
+            let instructions = decode_section(version, &ins_wire, MAX_INSTRUCTION_SECTION_LEN)?;
+            let new_data = decode_section(version, &new_wire, DELTA_WINDOW_MAX)?;
+            let source_view = self.read_source_view(&window)?;
+            let data =
+                apply_window_source(&source_view, window.tview_len, &instructions, &new_data)?;
+            out.write_all(&data)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish<W: Write>(mut self, out: &mut W) -> Result<(), SvnError> {
+        if self.stream.is_identity() {
+            if let Some(mut base) = self.base.take() {
+                base.seek(SeekFrom::Start(0))?;
+                let _ = std::io::copy(&mut base, out)?;
+            }
+            return Ok(());
+        }
+        self.stream.finish()
+    }
+
+    fn read_source_view(&mut self, window: &WindowHeader) -> Result<Vec<u8>, SvnError> {
+        if window.sview_len == 0 {
+            return Ok(Vec::new());
+        }
+
+        let end = window
+            .sview_offset
+            .checked_add(window.sview_len as u64)
+            .ok_or_else(|| SvnError::Protocol("svndiff source view overflow".into()))?;
+        if end > self.base_len {
+            return Err(SvnError::Protocol(
+                "svndiff source view out of bounds for base".into(),
+            ));
+        }
+
+        let Some(base) = self.base.as_mut() else {
+            return Err(SvnError::Protocol(
+                "svndiff source view out of bounds for base".into(),
+            ));
+        };
+        base.seek(SeekFrom::Start(window.sview_offset))?;
+        let mut buf = vec![0u8; window.sview_len];
+        base.read_exact(&mut buf)?;
+        Ok(buf)
+    }
 }
 
 /// A fully recorded textdelta stream for one file token.

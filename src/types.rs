@@ -169,6 +169,20 @@ pub struct FileRevContents {
     pub contents: Vec<u8>,
 }
 
+/// One annotated line as returned by [`crate::RaSvnSession::blame_file`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlameLine {
+    /// The revision that last changed this line (best-effort, line-based).
+    pub rev: u64,
+    /// The author for `rev`, if available in revision properties.
+    pub author: Option<String>,
+    /// The date for `rev`, if available in revision properties.
+    pub date: Option<String>,
+    /// The line contents (includes the trailing `\\n` when present).
+    pub line: String,
+}
+
 /// A lock description as returned by `get-lock(s)` or `lock`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]

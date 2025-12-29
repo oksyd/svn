@@ -63,6 +63,8 @@ mod client;
 mod commit;
 mod editor;
 mod error;
+mod export;
+mod highlevel;
 mod options;
 mod path;
 mod pool;
@@ -73,11 +75,15 @@ mod types;
 mod url;
 
 pub use client::{RaSvnClient, RaSvnSession};
-pub use commit::{CommitBuilder, SvndiffMode};
+pub use commit::{CommitBuilder, CommitStreamBuilder, SvndiffMode};
 pub use editor::{EditorCommand, EditorEvent, EditorEventHandler, Report, ReportCommand};
 pub use error::{ServerError, ServerErrorItem, SvnError};
+pub use export::FsEditor;
 pub use pool::{PooledSession, SessionPool};
-pub use textdelta::{RecordedTextDelta, TextDeltaApplier, TextDeltaRecorder, apply_textdelta};
+pub use textdelta::{
+    RecordedTextDelta, TextDeltaApplier, TextDeltaApplierSync, TextDeltaRecorder, apply_textdelta,
+    apply_textdelta_sync,
+};
 /// Convenience alias for results returned by this crate.
 pub type Result<T> = std::result::Result<T, SvnError>;
 pub use options::{
@@ -90,9 +96,9 @@ pub mod raw {
     pub use crate::rasvn::SvnItem;
 }
 pub use types::{
-    Capability, ChangedPath, CommitInfo, Depth, DirEntry, DirListing, DirentField, FileRev,
-    FileRevContents, GetFileResult, InheritedProps, LocationEntry, LocationSegment, LockDesc,
-    LogEntry, MergeInfoCatalog, MergeInfoInheritance, NodeKind, PropDelta, PropertyList,
+    BlameLine, Capability, ChangedPath, CommitInfo, Depth, DirEntry, DirListing, DirentField,
+    FileRev, FileRevContents, GetFileResult, InheritedProps, LocationEntry, LocationSegment,
+    LockDesc, LogEntry, MergeInfoCatalog, MergeInfoInheritance, NodeKind, PropDelta, PropertyList,
     RepositoryInfo, ServerInfo, StatEntry,
 };
 pub use url::SvnUrl;

@@ -47,7 +47,7 @@ pub(crate) fn encode_fulltext_with_options(
     Ok(out)
 }
 
-fn encode_insertion_window(
+pub(crate) fn encode_insertion_window(
     version: SvndiffVersion,
     new_data: &[u8],
     zlib_level: u32,

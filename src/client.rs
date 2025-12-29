@@ -248,6 +248,15 @@ impl RaSvnClient {
         session.log_with_options(options).await
     }
 
+    /// Convenience wrapper for [`RaSvnSession::log_each`].
+    pub async fn log_each<F>(&self, options: &LogOptions, on_entry: F) -> Result<(), SvnError>
+    where
+        F: FnMut(LogEntry) -> Result<(), SvnError> + Send,
+    {
+        let mut session = self.open_session().await?;
+        session.log_each(options, on_entry).await
+    }
+
     /// Convenience wrapper for [`RaSvnSession::get_dated_rev`].
     pub async fn get_dated_rev(&self, date: &str) -> Result<u64, SvnError> {
         let mut session = self.open_session().await?;
@@ -315,6 +324,24 @@ impl RaSvnClient {
         let mut session = self.open_session().await?;
         session
             .get_file_revs(path, start_rev, end_rev, include_merged_revisions)
+            .await
+    }
+
+    /// Convenience wrapper for [`RaSvnSession::get_file_revs_each`].
+    pub async fn get_file_revs_each<F>(
+        &self,
+        path: &str,
+        start_rev: Option<u64>,
+        end_rev: Option<u64>,
+        include_merged_revisions: bool,
+        on_rev: F,
+    ) -> Result<(), SvnError>
+    where
+        F: FnMut(crate::FileRev) -> Result<(), SvnError> + Send,
+    {
+        let mut session = self.open_session().await?;
+        session
+            .get_file_revs_each(path, start_rev, end_rev, include_merged_revisions, on_rev)
             .await
     }
 
@@ -511,6 +538,19 @@ impl RaSvnClient {
     ) -> Result<Vec<DirEntry>, SvnError> {
         let mut session = self.open_session().await?;
         session.list_with_options(options).await
+    }
+
+    /// Convenience wrapper for [`RaSvnSession::list_with_options_each`].
+    pub async fn list_with_options_each<F>(
+        &self,
+        options: &ListOptions,
+        on_entry: F,
+    ) -> Result<(), SvnError>
+    where
+        F: FnMut(DirEntry) -> Result<(), SvnError> + Send,
+    {
+        let mut session = self.open_session().await?;
+        session.list_with_options_each(options, on_entry).await
     }
 
     /// Convenience wrapper for [`RaSvnSession::list_recursive`].
@@ -1777,6 +1817,96 @@ impl RaSvnSession {
         .await
     }
 
+    /// Runs `get-file-revs`, streaming revisions to `on_rev`.
+    ///
+    /// This is a lower-allocation alternative to [`RaSvnSession::get_file_revs`].
+    ///
+    /// Note: this method does not automatically retry on mid-stream connection loss.
+    pub async fn get_file_revs_each<F>(
+        &mut self,
+        path: &str,
+        start_rev: Option<u64>,
+        end_rev: Option<u64>,
+        include_merged_revisions: bool,
+        mut on_rev: F,
+    ) -> Result<(), SvnError>
+    where
+        F: FnMut(crate::FileRev) -> Result<(), SvnError> + Send,
+    {
+        let path = validate_rel_path(path)?;
+
+        self.ensure_connected().await?;
+        let result = async {
+            let conn = self.conn_mut()?;
+
+            let start_tuple = match start_rev {
+                Some(rev) => SvnItem::List(vec![SvnItem::Number(rev)]),
+                None => SvnItem::List(Vec::new()),
+            };
+            let end_tuple = match end_rev {
+                Some(rev) => SvnItem::List(vec![SvnItem::Number(rev)]),
+                None => SvnItem::List(Vec::new()),
+            };
+
+            let params = SvnItem::List(vec![
+                SvnItem::String(path.as_bytes().to_vec()),
+                start_tuple,
+                end_tuple,
+                SvnItem::Bool(include_merged_revisions),
+            ]);
+
+            conn.send_command("get-file-revs", params).await?;
+            conn.handle_auth_request().await?;
+
+            let mut saw_any = false;
+            loop {
+                let item = conn.read_item().await?;
+                match item {
+                    SvnItem::Word(word) if word == "done" => break,
+                    SvnItem::List(_) => {
+                        saw_any = true;
+                        let mut rev_entry = parse_file_rev_entry(item)?;
+                        loop {
+                            let chunk = conn.read_item().await?;
+                            let Some(bytes) = chunk.as_bytes_string() else {
+                                return Err(SvnError::Protocol(
+                                    "file-rev delta chunk not a string".into(),
+                                ));
+                            };
+                            if bytes.is_empty() {
+                                break;
+                            }
+                            rev_entry.delta_chunks.push(bytes);
+                        }
+                        on_rev(rev_entry)?;
+                    }
+                    other => {
+                        return Err(SvnError::Protocol(format!(
+                            "unexpected file-rev entry item: {}",
+                            other.kind()
+                        )));
+                    }
+                }
+            }
+
+            let response = conn.read_command_response().await?;
+            response.ensure_success("get-file-revs")?;
+            if !saw_any {
+                return Err(SvnError::Protocol(
+                    "The get-file-revs command didn't return any revisions".into(),
+                ));
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(err) = &result
+            && should_drop_connection(err)
+        {
+            self.conn = None;
+        }
+        result
+    }
+
     /// Runs `get-file-revs` and returns file revisions with materialized contents.
     ///
     /// The server may omit text deltas for revisions where the file contents did
@@ -2361,6 +2491,79 @@ impl RaSvnSession {
         result
     }
 
+    pub(crate) async fn commit_drive<F>(
+        &mut self,
+        options: &CommitOptions,
+        f: F,
+    ) -> Result<CommitInfo, SvnError>
+    where
+        F: for<'d> FnOnce(
+            &'d mut CommitDrive<'_>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), SvnError>> + 'd>>,
+    {
+        self.ensure_connected().await?;
+        let result = async {
+            let ra_client = self.client.ra_client.clone();
+            let conn = self.conn_mut()?;
+            let server_supports_revprops = conn.server_has_cap("commit-revprops");
+            let server_supports_ephemeral_txnprops = conn.server_has_cap("ephemeral-txnprops");
+            let has_non_log_revprops = options.rev_props.keys().any(|k| k != "svn:log");
+            if !server_supports_revprops && has_non_log_revprops {
+                return Err(SvnError::Protocol(
+                    "server does not support setting revision properties during commit".into(),
+                ));
+            }
+
+            let mut rev_props = options.rev_props.clone();
+            rev_props.insert(
+                "svn:log".to_string(),
+                options.log_message.as_bytes().to_vec(),
+            );
+            if server_supports_revprops && server_supports_ephemeral_txnprops {
+                let compat = txn_client_compat_version(&ra_client);
+                rev_props.insert(
+                    "svn:txn-client-compat-version".to_string(),
+                    compat.as_bytes().to_vec(),
+                );
+                rev_props.insert(
+                    "svn:txn-user-agent".to_string(),
+                    ra_client.as_bytes().to_vec(),
+                );
+            }
+
+            let mut lock_tokens_items = Vec::with_capacity(options.lock_tokens.len());
+            for lock_token in &options.lock_tokens {
+                let path = validate_rel_path(&lock_token.path)?;
+                lock_tokens_items.push(SvnItem::List(vec![
+                    SvnItem::String(path.as_bytes().to_vec()),
+                    SvnItem::String(lock_token.token.as_bytes().to_vec()),
+                ]));
+            }
+
+            let params = SvnItem::List(vec![
+                SvnItem::String(options.log_message.as_bytes().to_vec()),
+                SvnItem::List(lock_tokens_items),
+                SvnItem::Bool(options.keep_locks),
+                encode_proplist(&rev_props),
+            ]);
+
+            let response = conn.call("commit", params).await?;
+            let _ = response.success_params("commit")?;
+
+            let mut drive = CommitDrive::new(conn);
+            {
+                let fut = f(&mut drive);
+                fut.await?;
+            }
+            drive.finish().await
+        }
+        .await;
+        if result.is_err() {
+            self.conn = None;
+        }
+        result
+    }
+
     /// Convenience wrapper for [`RaSvnSession::log_with_options`] over a revision range.
     pub async fn log(&mut self, start_rev: u64, end_rev: u64) -> Result<Vec<LogEntry>, SvnError> {
         let options = LogOptions::between(start_rev, end_rev);
@@ -2487,6 +2690,139 @@ impl RaSvnSession {
             })
         })
         .await
+    }
+
+    /// Runs `log` with a [`LogOptions`] builder, streaming entries to `on_entry`.
+    ///
+    /// This is a lower-allocation alternative to [`RaSvnSession::log_with_options`].
+    ///
+    /// Note: this method does not automatically retry on mid-stream connection loss.
+    pub async fn log_each<F>(
+        &mut self,
+        options: &LogOptions,
+        mut on_entry: F,
+    ) -> Result<(), SvnError>
+    where
+        F: FnMut(LogEntry) -> Result<(), SvnError> + Send,
+    {
+        let target_paths = options.target_paths.clone();
+        let start_rev = options.start_rev;
+        let end_rev = options.end_rev;
+        let changed_paths = options.changed_paths;
+        let strict_node = options.strict_node;
+        let limit = options.limit;
+        let include_merged_revisions = options.include_merged_revisions;
+        let revprops = options.revprops.clone();
+
+        self.ensure_connected().await?;
+        let result = async {
+            let conn = self.conn_mut()?;
+
+            let target_paths = SvnItem::List(
+                target_paths
+                    .into_iter()
+                    .map(|p| SvnItem::String(p.into_bytes()))
+                    .collect(),
+            );
+            let start_rev_tuple = match start_rev {
+                Some(rev) => SvnItem::List(vec![SvnItem::Number(rev)]),
+                None => SvnItem::List(Vec::new()),
+            };
+            let end_rev_tuple = match end_rev {
+                Some(rev) => SvnItem::List(vec![SvnItem::Number(rev)]),
+                None => SvnItem::List(Vec::new()),
+            };
+
+            let (want_author, want_date, want_message, want_custom_revprops) = match &revprops {
+                LogRevProps::All => (true, true, true, true),
+                LogRevProps::Custom(names) => {
+                    let mut want_author = false;
+                    let mut want_date = false;
+                    let mut want_message = false;
+                    let mut want_custom_revprops = false;
+                    for name in names {
+                        match name.as_str() {
+                            "svn:author" => want_author = true,
+                            "svn:date" => want_date = true,
+                            "svn:log" => want_message = true,
+                            _ => want_custom_revprops = true,
+                        }
+                    }
+                    (want_author, want_date, want_message, want_custom_revprops)
+                }
+            };
+
+            let mut params_items = vec![
+                target_paths,
+                start_rev_tuple,
+                end_rev_tuple,
+                SvnItem::Bool(changed_paths),
+                SvnItem::Bool(strict_node),
+                SvnItem::Number(limit),
+                SvnItem::Bool(include_merged_revisions),
+            ];
+            match &revprops {
+                LogRevProps::All => {
+                    params_items.push(SvnItem::Word("all-revprops".to_string()));
+                }
+                LogRevProps::Custom(revprops) => {
+                    params_items.push(SvnItem::Word("revprops".to_string()));
+                    params_items.push(SvnItem::List(
+                        revprops
+                            .iter()
+                            .map(|p| SvnItem::String(p.as_bytes().to_vec()))
+                            .collect(),
+                    ));
+                }
+            }
+
+            conn.send_command("log", SvnItem::List(params_items))
+                .await?;
+            conn.handle_auth_request().await?;
+
+            loop {
+                let item = conn.read_item().await?;
+                match item {
+                    SvnItem::Word(word) if word == "done" => break,
+                    SvnItem::List(items) => {
+                        let mut entry = parse_log_entry(items, want_custom_revprops)?;
+                        if want_author && let Some(author) = entry.author.as_deref() {
+                            entry
+                                .rev_props
+                                .insert("svn:author".to_string(), author.as_bytes().to_vec());
+                        }
+                        if want_date && let Some(date) = entry.date.as_deref() {
+                            entry
+                                .rev_props
+                                .insert("svn:date".to_string(), date.as_bytes().to_vec());
+                        }
+                        if want_message && let Some(message) = entry.message.as_deref() {
+                            entry
+                                .rev_props
+                                .insert("svn:log".to_string(), message.as_bytes().to_vec());
+                        }
+                        on_entry(entry)?;
+                    }
+                    other => {
+                        return Err(SvnError::Protocol(format!(
+                            "unexpected log entry item: {}",
+                            other.kind()
+                        )));
+                    }
+                }
+            }
+
+            let response = conn.read_command_response().await?;
+            response.ensure_success("log")?;
+            Ok(())
+        }
+        .await;
+        if let Err(err) = &result
+            && should_drop_connection(err)
+        {
+            self.conn = None;
+        }
+        result
     }
 
     /// Runs `get-dir` and returns a directory listing.
@@ -2670,6 +3006,118 @@ impl RaSvnSession {
         .await
     }
 
+    /// Runs [`RaSvnSession::list_each`] using a [`ListOptions`] builder.
+    pub async fn list_with_options_each<F>(
+        &mut self,
+        options: &ListOptions,
+        on_entry: F,
+    ) -> Result<(), SvnError>
+    where
+        F: FnMut(DirEntry) -> Result<(), SvnError> + Send,
+    {
+        let patterns = if options.patterns.is_empty() {
+            None
+        } else {
+            Some(options.patterns.as_slice())
+        };
+        self.list_each(
+            &options.path,
+            options.rev,
+            options.depth,
+            &options.fields,
+            patterns,
+            on_entry,
+        )
+        .await
+    }
+
+    /// Runs `list` (server capability), streaming directory entries to `on_entry`.
+    ///
+    /// This is a lower-allocation alternative to [`RaSvnSession::list`].
+    ///
+    /// Note: this method does not automatically retry on mid-stream connection loss.
+    pub async fn list_each<F>(
+        &mut self,
+        path: &str,
+        rev: Option<u64>,
+        depth: Depth,
+        fields: &[DirentField],
+        patterns: Option<&[String]>,
+        mut on_entry: F,
+    ) -> Result<(), SvnError>
+    where
+        F: FnMut(DirEntry) -> Result<(), SvnError> + Send,
+    {
+        let path = validate_rel_dir_path(path)?;
+        let fields = if fields.is_empty() {
+            vec![DirentField::Kind]
+        } else {
+            fields.to_vec()
+        };
+        let patterns = patterns.map(ToOwned::to_owned);
+
+        self.ensure_connected().await?;
+        let result = async {
+            let conn = self.conn_mut()?;
+            let rev_tuple = match rev {
+                Some(r) => SvnItem::List(vec![SvnItem::Number(r)]),
+                None => SvnItem::List(Vec::new()),
+            };
+
+            let mut params_items = vec![
+                SvnItem::String(path.as_bytes().to_vec()),
+                rev_tuple,
+                SvnItem::Word(depth.as_word().to_string()),
+                SvnItem::List(
+                    fields
+                        .iter()
+                        .map(|f| SvnItem::Word(f.as_word().to_string()))
+                        .collect(),
+                ),
+            ];
+
+            if let Some(patterns) = patterns.as_ref()
+                && !patterns.is_empty()
+            {
+                params_items.push(SvnItem::List(
+                    patterns
+                        .iter()
+                        .map(|p| SvnItem::String(p.as_bytes().to_vec()))
+                        .collect(),
+                ));
+            }
+
+            conn.send_command("list", SvnItem::List(params_items))
+                .await?;
+            conn.handle_auth_request().await?;
+
+            loop {
+                let item = conn.read_item().await?;
+                match item {
+                    SvnItem::Word(word) if word == "done" => break,
+                    SvnItem::List(items) => on_entry(parse_list_dirent(items)?)?,
+                    other => {
+                        return Err(SvnError::Protocol(format!(
+                            "unexpected list dirent item: {}",
+                            other.kind()
+                        )));
+                    }
+                }
+            }
+
+            let response = conn.read_command_response().await?;
+            response.ensure_success("list")?;
+            Ok(())
+        }
+        .await;
+        if let Err(err) = &result
+            && should_drop_connection(err)
+        {
+            self.conn = None;
+        }
+        result
+    }
+
     /// Runs `list` (server capability) and returns directory entries.
     pub async fn list(
         &mut self,
@@ -2824,6 +3272,84 @@ fn txn_client_compat_version(ra_client: &str) -> String {
         rest.split_whitespace().next().unwrap_or(rest).to_string()
     } else {
         env!("CARGO_PKG_VERSION").to_string()
+    }
+}
+
+pub(crate) struct CommitDrive<'a> {
+    conn: &'a mut RaSvnConnection,
+    batch: Vec<u8>,
+    since_poll: usize,
+    closed: bool,
+}
+
+impl<'a> CommitDrive<'a> {
+    const MAX_BATCH_BYTES: usize = 256 * 1024;
+    const MAX_COMMANDS_PER_BATCH: usize = 32;
+
+    fn new(conn: &'a mut RaSvnConnection) -> Self {
+        Self {
+            conn,
+            batch: Vec::new(),
+            since_poll: 0,
+            closed: false,
+        }
+    }
+
+    pub(crate) async fn send(&mut self, command: &EditorCommand) -> Result<(), SvnError> {
+        if self.closed {
+            return Err(SvnError::Protocol(
+                "commit editor already closed (close-edit sent)".into(),
+            ));
+        }
+        if matches!(command, EditorCommand::AbortEdit) {
+            return Err(SvnError::Protocol(
+                "commit does not support user-supplied abort-edit".into(),
+            ));
+        }
+
+        if self.since_poll == 0 {
+            check_for_edit_status(self.conn).await?;
+        }
+
+        encode_editor_command(command, &mut self.batch)?;
+        self.since_poll += 1;
+
+        if self.since_poll >= Self::MAX_COMMANDS_PER_BATCH
+            || self.batch.len() >= Self::MAX_BATCH_BYTES
+        {
+            self.flush().await?;
+        }
+
+        if matches!(command, EditorCommand::CloseEdit) {
+            self.closed = true;
+        }
+        Ok(())
+    }
+
+    async fn flush(&mut self) -> Result<(), SvnError> {
+        if !self.batch.is_empty() {
+            self.conn.write_wire_bytes(&self.batch).await?;
+            self.batch.clear();
+        }
+        self.since_poll = 0;
+        Ok(())
+    }
+
+    async fn finish(&mut self) -> Result<CommitInfo, SvnError> {
+        if !self.closed {
+            return Err(SvnError::Protocol(
+                "commit drive did not send close-edit".into(),
+            ));
+        }
+
+        self.flush().await?;
+
+        let response = self.conn.read_command_response().await?;
+        response.ensure_success("commit")?;
+
+        self.conn.handle_auth_request().await?;
+        let item = self.conn.read_item().await?;
+        parse_commit_info(&item)
     }
 }
 
@@ -3692,6 +4218,337 @@ mod tests {
             assert_eq!(result.inherited_props.len(), 1);
             assert_eq!(result.inherited_props[0].path, "/");
             assert_eq!(result.inherited_props[0].props.get("p").unwrap(), b"v");
+
+            server_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn commit_builder_put_file_creates_missing_parent_dirs() {
+        run_async(async {
+            let (mut session, mut server) = connected_session().await;
+
+            let base_rev = 10u64;
+            let server_task = tokio::spawn(async move {
+                for (path, kind) in [("a", "none"), ("a/b", "none"), ("a/b/c.txt", "none")] {
+                    let expected = SvnItem::List(vec![
+                        SvnItem::Word("check-path".to_string()),
+                        SvnItem::List(vec![
+                            SvnItem::String(path.as_bytes().to_vec()),
+                            SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                        ]),
+                    ]);
+                    assert_eq!(read_line(&mut server).await, encode_line(&expected));
+                    write_item_line(&mut server, &auth_request("realm")).await;
+                    write_item_line(
+                        &mut server,
+                        &SvnItem::List(vec![
+                            SvnItem::Word("success".to_string()),
+                            SvnItem::List(vec![SvnItem::Word(kind.to_string())]),
+                        ]),
+                    )
+                    .await;
+                }
+            });
+
+            let builder = crate::CommitBuilder::new()
+                .with_base_rev(base_rev)
+                .put_file("a/b/c.txt", b"hello".to_vec());
+            let commands = builder.build_editor_commands(&mut session).await.unwrap();
+
+            assert!(matches!(
+                &commands[1],
+                EditorCommand::AddDir { path, .. } if path == "a"
+            ));
+            assert!(matches!(
+                &commands[2],
+                EditorCommand::AddDir { path, .. } if path == "a/b"
+            ));
+            assert!(matches!(
+                &commands[3],
+                EditorCommand::AddFile { path, .. } if path == "a/b/c.txt"
+            ));
+            assert!(matches!(commands.last(), Some(EditorCommand::CloseEdit)));
+
+            server_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn commit_builder_delete_emits_delete_entry() {
+        run_async(async {
+            let (mut session, mut server) = connected_session().await;
+
+            let base_rev = 5u64;
+            let server_task = tokio::spawn(async move {
+                for (path, kind) in [("trunk", "dir"), ("trunk/old.txt", "file")] {
+                    let expected = SvnItem::List(vec![
+                        SvnItem::Word("check-path".to_string()),
+                        SvnItem::List(vec![
+                            SvnItem::String(path.as_bytes().to_vec()),
+                            SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                        ]),
+                    ]);
+                    assert_eq!(read_line(&mut server).await, encode_line(&expected));
+                    write_item_line(&mut server, &auth_request("realm")).await;
+                    write_item_line(
+                        &mut server,
+                        &SvnItem::List(vec![
+                            SvnItem::Word("success".to_string()),
+                            SvnItem::List(vec![SvnItem::Word(kind.to_string())]),
+                        ]),
+                    )
+                    .await;
+                }
+            });
+
+            let builder = crate::CommitBuilder::new()
+                .with_base_rev(base_rev)
+                .delete("trunk/old.txt");
+            let commands = builder.build_editor_commands(&mut session).await.unwrap();
+
+            assert!(commands.iter().any(|c| matches!(
+                c,
+                EditorCommand::DeleteEntry { path, rev, .. } if path == "trunk/old.txt" && *rev == base_rev
+            )));
+
+            server_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn commit_builder_file_prop_emits_change_file_prop() {
+        run_async(async {
+            let (mut session, mut server) = connected_session().await;
+
+            let base_rev = 7u64;
+            let server_task = tokio::spawn(async move {
+                for (path, kind) in [("trunk", "dir"), ("trunk/hello.txt", "file")] {
+                    let expected = SvnItem::List(vec![
+                        SvnItem::Word("check-path".to_string()),
+                        SvnItem::List(vec![
+                            SvnItem::String(path.as_bytes().to_vec()),
+                            SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                        ]),
+                    ]);
+                    assert_eq!(read_line(&mut server).await, encode_line(&expected));
+                    write_item_line(&mut server, &auth_request("realm")).await;
+                    write_item_line(
+                        &mut server,
+                        &SvnItem::List(vec![
+                            SvnItem::Word("success".to_string()),
+                            SvnItem::List(vec![SvnItem::Word(kind.to_string())]),
+                        ]),
+                    )
+                    .await;
+                }
+            });
+
+            let builder = crate::CommitBuilder::new()
+                .with_base_rev(base_rev)
+                .set_file_prop("trunk/hello.txt", "svn:mime-type", b"text/plain".to_vec());
+            let commands = builder.build_editor_commands(&mut session).await.unwrap();
+
+            assert!(commands.iter().any(|c| matches!(
+                c,
+                EditorCommand::ChangeFileProp { name, value, .. }
+                    if name == "svn:mime-type" && value.as_deref() == Some(b"text/plain".as_slice())
+            )));
+
+            server_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn commit_builder_copy_file_emits_add_file_copy_from() {
+        run_async(async {
+            let (mut session, mut server) = connected_session().await;
+
+            let base_rev = 3u64;
+            let server_task = tokio::spawn(async move {
+                // copy source kind lookup
+                for (path, kind) in [
+                    ("trunk/a.txt", "file"),
+                    ("branches", "none"),
+                    ("branches/b.txt", "none"),
+                ] {
+                    let expected = SvnItem::List(vec![
+                        SvnItem::Word("check-path".to_string()),
+                        SvnItem::List(vec![
+                            SvnItem::String(path.as_bytes().to_vec()),
+                            SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                        ]),
+                    ]);
+                    assert_eq!(read_line(&mut server).await, encode_line(&expected));
+                    write_item_line(&mut server, &auth_request("realm")).await;
+                    write_item_line(
+                        &mut server,
+                        &SvnItem::List(vec![
+                            SvnItem::Word("success".to_string()),
+                            SvnItem::List(vec![SvnItem::Word(kind.to_string())]),
+                        ]),
+                    )
+                    .await;
+                }
+            });
+
+            let builder = crate::CommitBuilder::new()
+                .with_base_rev(base_rev)
+                .copy("trunk/a.txt", "branches/b.txt");
+            let commands = builder.build_editor_commands(&mut session).await.unwrap();
+
+            assert!(commands.iter().any(|c| matches!(
+                c,
+                EditorCommand::AddFile { path, copy_from, .. }
+                    if path == "branches/b.txt"
+                        && matches!(copy_from.as_ref(), Some((p, r)) if p == "trunk/a.txt" && *r == base_rev)
+            )));
+
+            server_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn commit_stream_builder_sends_svndiff_fulltext_from_reader() {
+        run_async(async {
+            let (mut session, mut server) = connected_session().await;
+
+            let base_rev = 1u64;
+            let contents = b"hello".to_vec();
+            let expected_svndiff =
+                encode_fulltext_with_options(SvndiffVersion::V0, &contents, 0, 64 * 1024).unwrap();
+
+            let server_task = tokio::spawn(async move {
+                // check-path hello.txt -> none
+                let expected_check = SvnItem::List(vec![
+                    SvnItem::Word("check-path".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::String(b"hello.txt".to_vec()),
+                        SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                    ]),
+                ]);
+                assert_eq!(read_line(&mut server).await, encode_line(&expected_check));
+                write_item_line(&mut server, &auth_request("realm-1")).await;
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("success".to_string()),
+                        SvnItem::List(vec![SvnItem::Word("none".to_string())]),
+                    ]),
+                )
+                .await;
+
+                // commit request
+                let mut rev_props = PropertyList::new();
+                rev_props.insert("svn:log".to_string(), b"msg".to_vec());
+                let expected_commit = SvnItem::List(vec![
+                    SvnItem::Word("commit".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::String(b"msg".to_vec()),
+                        SvnItem::List(Vec::new()),
+                        SvnItem::Bool(false),
+                        encode_proplist(&rev_props),
+                    ]),
+                ]);
+                assert_eq!(read_line(&mut server).await, encode_line(&expected_commit));
+                write_item_line(&mut server, &auth_request("realm-2")).await;
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("success".to_string()),
+                        SvnItem::List(Vec::new()),
+                    ]),
+                )
+                .await;
+
+                fn encode_cmd(cmd: &EditorCommand) -> Vec<u8> {
+                    let mut buf = Vec::new();
+                    encode_editor_command(cmd, &mut buf).unwrap();
+                    buf
+                }
+
+                // editor drive
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_cmd(&EditorCommand::OpenRoot {
+                        rev: Some(base_rev),
+                        token: "r".to_string(),
+                    })
+                );
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_cmd(&EditorCommand::AddFile {
+                        path: "hello.txt".to_string(),
+                        dir_token: "r".to_string(),
+                        file_token: "f1".to_string(),
+                        copy_from: None,
+                    })
+                );
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_cmd(&EditorCommand::ApplyTextDelta {
+                        file_token: "f1".to_string(),
+                        base_checksum: None,
+                    })
+                );
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_cmd(&EditorCommand::TextDeltaChunk {
+                        file_token: "f1".to_string(),
+                        chunk: expected_svndiff,
+                    })
+                );
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_cmd(&EditorCommand::TextDeltaEnd {
+                        file_token: "f1".to_string(),
+                    })
+                );
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_cmd(&EditorCommand::CloseFile {
+                        file_token: "f1".to_string(),
+                        text_checksum: None,
+                    })
+                );
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_cmd(&EditorCommand::CloseDir {
+                        dir_token: "r".to_string(),
+                    })
+                );
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_cmd(&EditorCommand::CloseEdit)
+                );
+
+                // commit response
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("success".to_string()),
+                        SvnItem::List(Vec::new()),
+                    ]),
+                )
+                .await;
+                write_item_line(&mut server, &auth_request("realm-3")).await;
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![SvnItem::Number(base_rev + 1)]),
+                )
+                .await;
+            });
+
+            let builder = crate::CommitStreamBuilder::new()
+                .with_base_rev(base_rev)
+                .with_zlib_level(0)
+                .put_file_reader("hello.txt", std::io::Cursor::new(contents));
+
+            let info = builder
+                .commit(&mut session, &CommitOptions::new("msg"))
+                .await
+                .unwrap();
+            assert_eq!(info.new_rev, base_rev + 1);
 
             server_task.await.unwrap();
         });
