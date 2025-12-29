@@ -54,7 +54,9 @@ pub(crate) fn encode_insertion_window(
     out: &mut Vec<u8>,
 ) -> Result<(), SvnError> {
     let mut instructions = Vec::new();
-    encode_new_instruction(new_data.len(), &mut instructions);
+    if !new_data.is_empty() {
+        encode_new_instruction(new_data.len(), &mut instructions);
+    }
 
     let (instructions_wire, newdata_wire) = match version {
         SvndiffVersion::V0 => (instructions, new_data.to_vec()),
@@ -298,10 +300,9 @@ mod tests {
             bytes,
             [
                 b'S', b'V', b'N', 0, // header
-                0, 0, 0,    // sview_offset/sview_len/tview_len
-                1,    // instructions_len
-                0,    // newdata_len
-                0x80, // insert 0 bytes (length in low bits)
+                0, 0, 0, // sview_offset/sview_len/tview_len
+                0, // instructions_len
+                0, // newdata_len
             ]
         );
     }
