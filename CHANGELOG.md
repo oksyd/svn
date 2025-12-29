@@ -1,3 +1,8 @@
+## [0.1.4] - 2025-12-29
+
+### 🐛 Bug Fixes
+
+- Remove doc_auto_cfg for docs.rs
 ## [0.1.3] - 2025-12-29
 
 ### 🚀 Features
@@ -26,6 +31,10 @@
 ### ⚡ Performance
 
 - *(ra_svn)* Batch writes and reduce allocations
+
+### ⚙️ Miscellaneous Tasks
+
+- Release svn version 0.1.3
 ## [0.1.2] - 2025-12-28
 
 ### ⚙️ Miscellaneous Tasks
