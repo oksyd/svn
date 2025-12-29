@@ -11,7 +11,9 @@ use tracing::debug;
 
 use crate::path::{validate_rel_dir_path, validate_rel_path};
 use crate::rasvn::conn::{RaSvnConnection, RaSvnConnectionConfig};
-use crate::rasvn::edit::{drive_editor, encode_editor_command, parse_failure, send_report};
+use crate::rasvn::edit::{
+    drive_editor, drive_editor_async, encode_editor_command, parse_failure, send_report,
+};
 use crate::rasvn::parse::{
     opt_tuple_wordish, parse_commit_info, parse_file_rev_entry, parse_get_dir_listing,
     parse_get_file_response_params, parse_iproplist, parse_list_dirent, parse_location_entry,
@@ -20,13 +22,13 @@ use crate::rasvn::parse::{
 };
 use crate::raw::SvnItem;
 use crate::{
-    Capability, CommitInfo, CommitOptions, Depth, DiffOptions, DirEntry, DirListing, DirentField,
-    EditorCommand, EditorEvent, EditorEventHandler, GetFileOptions, GetFileResult, InheritedProps,
-    ListOptions, LocationEntry, LocationSegment, LockDesc, LockManyOptions, LockOptions,
-    LockTarget, LogEntry, LogOptions, LogRevProps, MergeInfoCatalog, MergeInfoInheritance,
-    NodeKind, PropertyList, ReplayOptions, ReplayRangeOptions, Report, ReportCommand, ServerInfo,
-    StatEntry, StatusOptions, SvnError, SvnUrl, SwitchOptions, UnlockManyOptions, UnlockOptions,
-    UnlockTarget, UpdateOptions,
+    AsyncEditorEventHandler, Capability, CommitInfo, CommitOptions, Depth, DiffOptions, DirEntry,
+    DirListing, DirentField, EditorCommand, EditorEvent, EditorEventHandler, GetFileOptions,
+    GetFileResult, InheritedProps, ListOptions, LocationEntry, LocationSegment, LockDesc,
+    LockManyOptions, LockOptions, LockTarget, LogEntry, LogOptions, LogRevProps, MergeInfoCatalog,
+    MergeInfoInheritance, NodeKind, PropertyList, ReplayOptions, ReplayRangeOptions, Report,
+    ReportCommand, ServerInfo, StatEntry, StatusOptions, SvnError, SvnUrl, SwitchOptions,
+    UnlockManyOptions, UnlockOptions, UnlockTarget, UpdateOptions,
 };
 
 /// A reusable configuration object for connecting to an `svn://` server.
@@ -574,6 +576,19 @@ impl RaSvnClient {
         session.update(options, report, handler).await
     }
 
+    /// Convenience wrapper for [`RaSvnSession::update_with_async_handler`].
+    pub async fn update_with_async_handler(
+        &self,
+        options: &UpdateOptions,
+        report: &Report,
+        handler: &mut dyn AsyncEditorEventHandler,
+    ) -> Result<(), SvnError> {
+        let mut session = self.open_session().await?;
+        session
+            .update_with_async_handler(options, report, handler)
+            .await
+    }
+
     /// Convenience wrapper for [`RaSvnSession::switch`].
     pub async fn switch(
         &self,
@@ -583,6 +598,19 @@ impl RaSvnClient {
     ) -> Result<(), SvnError> {
         let mut session = self.open_session().await?;
         session.switch(options, report, handler).await
+    }
+
+    /// Convenience wrapper for [`RaSvnSession::switch_with_async_handler`].
+    pub async fn switch_with_async_handler(
+        &self,
+        options: &SwitchOptions,
+        report: &Report,
+        handler: &mut dyn AsyncEditorEventHandler,
+    ) -> Result<(), SvnError> {
+        let mut session = self.open_session().await?;
+        session
+            .switch_with_async_handler(options, report, handler)
+            .await
     }
 
     /// Convenience wrapper for [`RaSvnSession::status`].
@@ -596,6 +624,19 @@ impl RaSvnClient {
         session.status(options, report, handler).await
     }
 
+    /// Convenience wrapper for [`RaSvnSession::status_with_async_handler`].
+    pub async fn status_with_async_handler(
+        &self,
+        options: &StatusOptions,
+        report: &Report,
+        handler: &mut dyn AsyncEditorEventHandler,
+    ) -> Result<(), SvnError> {
+        let mut session = self.open_session().await?;
+        session
+            .status_with_async_handler(options, report, handler)
+            .await
+    }
+
     /// Convenience wrapper for [`RaSvnSession::diff`].
     pub async fn diff(
         &self,
@@ -605,6 +646,19 @@ impl RaSvnClient {
     ) -> Result<(), SvnError> {
         let mut session = self.open_session().await?;
         session.diff(options, report, handler).await
+    }
+
+    /// Convenience wrapper for [`RaSvnSession::diff_with_async_handler`].
+    pub async fn diff_with_async_handler(
+        &self,
+        options: &DiffOptions,
+        report: &Report,
+        handler: &mut dyn AsyncEditorEventHandler,
+    ) -> Result<(), SvnError> {
+        let mut session = self.open_session().await?;
+        session
+            .diff_with_async_handler(options, report, handler)
+            .await
     }
 
     /// Convenience wrapper for [`RaSvnSession::replay`].
@@ -617,6 +671,16 @@ impl RaSvnClient {
         session.replay(options, handler).await
     }
 
+    /// Convenience wrapper for [`RaSvnSession::replay_with_async_handler`].
+    pub async fn replay_with_async_handler(
+        &self,
+        options: &ReplayOptions,
+        handler: &mut dyn AsyncEditorEventHandler,
+    ) -> Result<(), SvnError> {
+        let mut session = self.open_session().await?;
+        session.replay_with_async_handler(options, handler).await
+    }
+
     /// Convenience wrapper for [`RaSvnSession::replay_range`].
     pub async fn replay_range(
         &self,
@@ -625,6 +689,18 @@ impl RaSvnClient {
     ) -> Result<(), SvnError> {
         let mut session = self.open_session().await?;
         session.replay_range(options, handler).await
+    }
+
+    /// Convenience wrapper for [`RaSvnSession::replay_range_with_async_handler`].
+    pub async fn replay_range_with_async_handler(
+        &self,
+        options: &ReplayRangeOptions,
+        handler: &mut dyn AsyncEditorEventHandler,
+    ) -> Result<(), SvnError> {
+        let mut session = self.open_session().await?;
+        session
+            .replay_range_with_async_handler(options, handler)
+            .await
     }
 
     async fn connect(&self) -> Result<(RaSvnConnection, ServerInfo), SvnError> {
@@ -961,6 +1037,54 @@ impl RaSvnSession {
         result
     }
 
+    /// Runs `update` using a client-provided report and consumes the editor drive with
+    /// an async handler.
+    ///
+    /// The report must end with [`ReportCommand::FinishReport`] or
+    /// [`ReportCommand::AbortReport`]. Editor events are delivered to `handler`.
+    pub async fn update_with_async_handler(
+        &mut self,
+        options: &UpdateOptions,
+        report: &Report,
+        handler: &mut dyn AsyncEditorEventHandler,
+    ) -> Result<(), SvnError> {
+        require_finish_report(report)?;
+        let target = validate_rel_dir_path(&options.target)?;
+        let recurse = matches!(options.depth, Depth::Immediates | Depth::Infinity);
+
+        self.ensure_connected().await?;
+        let result = async {
+            let conn = self.conn_mut()?;
+            let rev_tuple = match options.rev {
+                Some(r) => SvnItem::List(vec![SvnItem::Number(r)]),
+                None => SvnItem::List(Vec::new()),
+            };
+            let params = SvnItem::List(vec![
+                rev_tuple,
+                SvnItem::String(target.as_bytes().to_vec()),
+                SvnItem::Bool(recurse),
+                SvnItem::Word(options.depth.as_word().to_string()),
+                SvnItem::Bool(options.send_copyfrom_args),
+                SvnItem::Bool(options.ignore_ancestry),
+            ]);
+            conn.send_command("update", params).await?;
+            conn.handle_auth_request().await?;
+            send_report(conn, report).await?;
+            conn.handle_auth_request().await?;
+            let _ = drive_editor_async(conn, Some(handler), false).await?;
+            let response = conn.read_command_response().await?;
+            let _ = response.success_params("update")?;
+            Ok(())
+        }
+        .await;
+        if let Err(err) = &result
+            && should_drop_connection(err)
+        {
+            self.conn = None;
+        }
+        result
+    }
+
     /// Runs `switch` using a client-provided report and consumes the editor drive.
     ///
     /// The report must end with [`ReportCommand::FinishReport`] or
@@ -1009,6 +1133,55 @@ impl RaSvnSession {
         result
     }
 
+    /// Runs `switch` using a client-provided report and consumes the editor drive with
+    /// an async handler.
+    ///
+    /// The report must end with [`ReportCommand::FinishReport`] or
+    /// [`ReportCommand::AbortReport`]. Editor events are delivered to `handler`.
+    pub async fn switch_with_async_handler(
+        &mut self,
+        options: &SwitchOptions,
+        report: &Report,
+        handler: &mut dyn AsyncEditorEventHandler,
+    ) -> Result<(), SvnError> {
+        require_finish_report(report)?;
+        let target = validate_rel_dir_path(&options.target)?;
+        let recurse = matches!(options.depth, Depth::Immediates | Depth::Infinity);
+
+        self.ensure_connected().await?;
+        let result = async {
+            let conn = self.conn_mut()?;
+            let rev_tuple = match options.rev {
+                Some(r) => SvnItem::List(vec![SvnItem::Number(r)]),
+                None => SvnItem::List(Vec::new()),
+            };
+            let params = SvnItem::List(vec![
+                rev_tuple,
+                SvnItem::String(target.as_bytes().to_vec()),
+                SvnItem::Bool(recurse),
+                SvnItem::String(options.switch_url.as_bytes().to_vec()),
+                SvnItem::Word(options.depth.as_word().to_string()),
+                SvnItem::Bool(options.send_copyfrom_args),
+                SvnItem::Bool(options.ignore_ancestry),
+            ]);
+            conn.send_command("switch", params).await?;
+            conn.handle_auth_request().await?;
+            send_report(conn, report).await?;
+            conn.handle_auth_request().await?;
+            let _ = drive_editor_async(conn, Some(handler), false).await?;
+            let response = conn.read_command_response().await?;
+            let _ = response.success_params("switch")?;
+            Ok(())
+        }
+        .await;
+        if let Err(err) = &result
+            && should_drop_connection(err)
+        {
+            self.conn = None;
+        }
+        result
+    }
+
     /// Runs `status` using a client-provided report and consumes the editor drive.
     ///
     /// The report must end with [`ReportCommand::FinishReport`] or
@@ -1041,6 +1214,52 @@ impl RaSvnSession {
             send_report(conn, report).await?;
             conn.handle_auth_request().await?;
             let _ = drive_editor(conn, Some(handler), false).await?;
+            let response = conn.read_command_response().await?;
+            let _ = response.success_params("status")?;
+            Ok(())
+        }
+        .await;
+        if let Err(err) = &result
+            && should_drop_connection(err)
+        {
+            self.conn = None;
+        }
+        result
+    }
+
+    /// Runs `status` using a client-provided report and consumes the editor drive with
+    /// an async handler.
+    ///
+    /// The report must end with [`ReportCommand::FinishReport`] or
+    /// [`ReportCommand::AbortReport`]. Editor events are delivered to `handler`.
+    pub async fn status_with_async_handler(
+        &mut self,
+        options: &StatusOptions,
+        report: &Report,
+        handler: &mut dyn AsyncEditorEventHandler,
+    ) -> Result<(), SvnError> {
+        require_finish_report(report)?;
+        let target = validate_rel_dir_path(&options.target)?;
+        let recurse = matches!(options.depth, Depth::Immediates | Depth::Infinity);
+
+        self.ensure_connected().await?;
+        let result = async {
+            let conn = self.conn_mut()?;
+            let rev_tuple = match options.rev {
+                Some(r) => SvnItem::List(vec![SvnItem::Number(r)]),
+                None => SvnItem::List(Vec::new()),
+            };
+            let params = SvnItem::List(vec![
+                SvnItem::String(target.as_bytes().to_vec()),
+                SvnItem::Bool(recurse),
+                rev_tuple,
+                SvnItem::Word(options.depth.as_word().to_string()),
+            ]);
+            conn.send_command("status", params).await?;
+            conn.handle_auth_request().await?;
+            send_report(conn, report).await?;
+            conn.handle_auth_request().await?;
+            let _ = drive_editor_async(conn, Some(handler), false).await?;
             let response = conn.read_command_response().await?;
             let _ = response.success_params("status")?;
             Ok(())
@@ -1102,6 +1321,55 @@ impl RaSvnSession {
         result
     }
 
+    /// Runs `diff` using a client-provided report and consumes the editor drive with
+    /// an async handler.
+    ///
+    /// The report must end with [`ReportCommand::FinishReport`] or
+    /// [`ReportCommand::AbortReport`]. Editor events are delivered to `handler`.
+    pub async fn diff_with_async_handler(
+        &mut self,
+        options: &DiffOptions,
+        report: &Report,
+        handler: &mut dyn AsyncEditorEventHandler,
+    ) -> Result<(), SvnError> {
+        require_finish_report(report)?;
+        let target = validate_rel_dir_path(&options.target)?;
+        let recurse = matches!(options.depth, Depth::Immediates | Depth::Infinity);
+
+        self.ensure_connected().await?;
+        let result = async {
+            let conn = self.conn_mut()?;
+            let rev_tuple = match options.rev {
+                Some(r) => SvnItem::List(vec![SvnItem::Number(r)]),
+                None => SvnItem::List(Vec::new()),
+            };
+            let params = SvnItem::List(vec![
+                rev_tuple,
+                SvnItem::String(target.as_bytes().to_vec()),
+                SvnItem::Bool(recurse),
+                SvnItem::Bool(options.ignore_ancestry),
+                SvnItem::String(options.versus_url.as_bytes().to_vec()),
+                SvnItem::Bool(options.text_deltas),
+                SvnItem::Word(options.depth.as_word().to_string()),
+            ]);
+            conn.send_command("diff", params).await?;
+            conn.handle_auth_request().await?;
+            send_report(conn, report).await?;
+            conn.handle_auth_request().await?;
+            let _ = drive_editor_async(conn, Some(handler), false).await?;
+            let response = conn.read_command_response().await?;
+            let _ = response.success_params("diff")?;
+            Ok(())
+        }
+        .await;
+        if let Err(err) = &result
+            && should_drop_connection(err)
+        {
+            self.conn = None;
+        }
+        result
+    }
+
     /// Runs `replay` for a single revision and emits editor events to `handler`.
     pub async fn replay(
         &mut self,
@@ -1119,6 +1387,36 @@ impl RaSvnSession {
             conn.send_command("replay", params).await?;
             conn.handle_auth_request().await?;
             let _ = drive_editor(conn, Some(handler), true).await?;
+            let response = conn.read_command_response().await?;
+            let _ = response.success_params("replay")?;
+            Ok(())
+        }
+        .await;
+        if let Err(err) = &result
+            && should_drop_connection(err)
+        {
+            self.conn = None;
+        }
+        result
+    }
+
+    /// Runs `replay` for a single revision and emits editor events to `handler` (async).
+    pub async fn replay_with_async_handler(
+        &mut self,
+        options: &ReplayOptions,
+        handler: &mut dyn AsyncEditorEventHandler,
+    ) -> Result<(), SvnError> {
+        self.ensure_connected().await?;
+        let result = async {
+            let conn = self.conn_mut()?;
+            let params = SvnItem::List(vec![
+                SvnItem::Number(options.revision),
+                SvnItem::Number(options.low_water_mark),
+                SvnItem::Bool(options.send_deltas),
+            ]);
+            conn.send_command("replay", params).await?;
+            conn.handle_auth_request().await?;
+            let _ = drive_editor_async(conn, Some(handler), true).await?;
             let response = conn.read_command_response().await?;
             let _ = response.success_params("replay")?;
             Ok(())
@@ -1188,6 +1486,78 @@ impl RaSvnSession {
                 }
 
                 let aborted = drive_editor(conn, Some(handler), true).await?;
+                if aborted {
+                    return Err(SvnError::Protocol("error while replaying commit".into()));
+                }
+            }
+
+            let response = conn.read_command_response().await?;
+            let _ = response.success_params("replay-range")?;
+            Ok(())
+        }
+        .await;
+        if result.is_err() {
+            self.conn = None;
+        }
+        result
+    }
+
+    /// Runs `replay-range` and emits revprops and editor events to `handler` (async).
+    pub async fn replay_range_with_async_handler(
+        &mut self,
+        options: &ReplayRangeOptions,
+        handler: &mut dyn AsyncEditorEventHandler,
+    ) -> Result<(), SvnError> {
+        if options.end_rev < options.start_rev {
+            return Err(SvnError::Protocol(
+                "end_rev must be greater than or equal to start_rev".into(),
+            ));
+        }
+
+        self.ensure_connected().await?;
+        let result = async {
+            let conn = self.conn_mut()?;
+            let params = SvnItem::List(vec![
+                SvnItem::Number(options.start_rev),
+                SvnItem::Number(options.end_rev),
+                SvnItem::Number(options.low_water_mark),
+                SvnItem::Bool(options.send_deltas),
+            ]);
+            conn.send_command("replay-range", params).await?;
+            conn.handle_auth_request().await?;
+
+            for _rev in options.start_rev..=options.end_rev {
+                let item = conn.read_item().await?;
+                let SvnItem::List(parts) = item else {
+                    return Err(SvnError::Protocol("expected revprops tuple".into()));
+                };
+                if parts.is_empty() {
+                    return Err(SvnError::Protocol("empty revprops tuple".into()));
+                }
+
+                let word = parts[0]
+                    .as_word()
+                    .ok_or_else(|| SvnError::Protocol("revprops tuple word not a word".into()))?;
+                let props_item = parts
+                    .get(1)
+                    .cloned()
+                    .unwrap_or_else(|| SvnItem::List(Vec::new()));
+                let props_list = props_item.as_list().unwrap_or_default();
+
+                match word.as_str() {
+                    "revprops" => {
+                        let props = parse_proplist(&props_item)?;
+                        handler.on_event(EditorEvent::RevProps { props }).await?;
+                    }
+                    "failure" => return Err(parse_failure(&props_list)),
+                    other => {
+                        return Err(SvnError::Protocol(format!(
+                            "expected revprops, found '{other}'"
+                        )));
+                    }
+                }
+
+                let aborted = drive_editor_async(conn, Some(handler), true).await?;
                 if aborted {
                     return Err(SvnError::Protocol("error while replaying commit".into()));
                 }

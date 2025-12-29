@@ -1,5 +1,8 @@
 //! Types for report and editor flows.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use crate::{Depth, PropertyList, SvnError};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -360,4 +363,41 @@ pub enum EditorCommand {
 pub trait EditorEventHandler {
     /// Called for each incoming editor event.
     fn on_event(&mut self, event: EditorEvent) -> Result<(), SvnError>;
+}
+
+/// Async handler for server-to-client [`EditorEvent`] streams.
+///
+/// This is useful when applying editor events involves async I/O (for example
+/// writing files via `tokio::fs`), and you want to avoid blocking the Tokio
+/// runtime thread.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use std::future::Future;
+/// use std::pin::Pin;
+/// use svn::{AsyncEditorEventHandler, EditorEvent, SvnError};
+///
+/// struct Collector {
+///     events: Vec<EditorEvent>,
+/// }
+///
+/// impl AsyncEditorEventHandler for Collector {
+///     fn on_event<'a>(
+///         &'a mut self,
+///         event: EditorEvent,
+///     ) -> Pin<Box<dyn Future<Output = Result<(), SvnError>> + Send + 'a>> {
+///         Box::pin(async move {
+///             self.events.push(event);
+///             Ok(())
+///         })
+///     }
+/// }
+/// ```
+pub trait AsyncEditorEventHandler: Send {
+    /// Called for each incoming editor event.
+    fn on_event<'a>(
+        &'a mut self,
+        event: EditorEvent,
+    ) -> Pin<Box<dyn Future<Output = Result<(), SvnError>> + Send + 'a>>;
 }

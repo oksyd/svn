@@ -1,7 +1,10 @@
 use crate::path::validate_rel_path_ref;
 use crate::rasvn::parse::{parse_proplist, parse_server_error};
 use crate::raw::SvnItem;
-use crate::{EditorCommand, EditorEvent, EditorEventHandler, Report, ReportCommand, SvnError};
+use crate::{
+    AsyncEditorEventHandler, EditorCommand, EditorEvent, EditorEventHandler, Report, ReportCommand,
+    SvnError,
+};
 
 use super::conn::RaSvnConnection;
 use super::wire::WireEncoder;
@@ -398,6 +401,65 @@ pub(crate) async fn drive_editor(
     }
 }
 
+pub(crate) async fn drive_editor_async(
+    conn: &mut RaSvnConnection,
+    mut handler: Option<&mut dyn AsyncEditorEventHandler>,
+    for_replay: bool,
+) -> Result<bool, SvnError> {
+    loop {
+        let (cmd, params_item) = read_command_item(conn).await?;
+        let params = params_item.as_list().unwrap_or_default();
+        if cmd == "failure" {
+            return Err(parse_failure(&params));
+        }
+
+        match cmd.as_str() {
+            "finish-replay" => {
+                if !for_replay {
+                    return Err(SvnError::Protocol(
+                        "finish-replay is only valid during replay".into(),
+                    ));
+                }
+                if let Some(handler) = handler.as_deref_mut()
+                    && let Err(err) = handler.on_event(EditorEvent::FinishReplay).await
+                {
+                    return handle_editor_consumer_error(conn, &err, false).await;
+                }
+                return Ok(false);
+            }
+            "close-edit" => {
+                if let Some(handler) = handler.as_deref_mut()
+                    && let Err(err) = handler.on_event(EditorEvent::CloseEdit).await
+                {
+                    return handle_editor_consumer_error(conn, &err, false).await;
+                }
+                conn.write_cmd_success().await?;
+                return Ok(false);
+            }
+            "abort-edit" => {
+                if let Some(handler) = handler.as_deref_mut()
+                    && let Err(err) = handler.on_event(EditorEvent::AbortEdit).await
+                {
+                    return handle_editor_consumer_error(conn, &err, false).await;
+                }
+                conn.write_cmd_success().await?;
+                return Ok(false);
+            }
+            _ => {}
+        }
+
+        let event = match parse_editor_event(&cmd, &params) {
+            Ok(event) => event,
+            Err(err) => return handle_editor_consumer_error(conn, &err, true).await,
+        };
+        if let Some(handler) = handler.as_deref_mut()
+            && let Err(err) = handler.on_event(event).await
+        {
+            return handle_editor_consumer_error(conn, &err, true).await;
+        }
+    }
+}
+
 async fn handle_editor_consumer_error(
     conn: &mut RaSvnConnection,
     err: &SvnError,
@@ -689,6 +751,7 @@ mod tests {
     use crate::rasvn::conn::RaSvnConnectionConfig;
     use crate::rasvn::encode_item;
     use std::future::Future;
+    use std::pin::Pin;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1034,6 +1097,193 @@ mod tests {
 
             let mut handler = Failer;
             let aborted = drive_editor(&mut conn, Some(&mut handler), false)
+                .await
+                .unwrap();
+            assert!(aborted);
+
+            let response_line = server_task.await.unwrap();
+            assert_eq!(response_line, encode_line(&expected_failure));
+        });
+    }
+
+    #[test]
+    fn drive_editor_async_collects_events_and_sends_success() {
+        run_async(async {
+            let (mut conn, mut server) = connected_conn().await;
+
+            struct Collector {
+                events: Vec<EditorEvent>,
+            }
+
+            impl AsyncEditorEventHandler for Collector {
+                fn on_event<'a>(
+                    &'a mut self,
+                    event: EditorEvent,
+                ) -> Pin<Box<dyn Future<Output = Result<(), SvnError>> + Send + 'a>>
+                {
+                    Box::pin(async move {
+                        self.events.push(event);
+                        Ok(())
+                    })
+                }
+            }
+
+            let server_task = tokio::spawn(async move {
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("target-rev".to_string()),
+                        SvnItem::List(vec![SvnItem::Number(42)]),
+                    ]),
+                )
+                .await;
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("close-edit".to_string()),
+                        SvnItem::List(Vec::new()),
+                    ]),
+                )
+                .await;
+                read_line(&mut server).await
+            });
+
+            let mut handler = Collector { events: Vec::new() };
+            let aborted = drive_editor_async(&mut conn, Some(&mut handler), false)
+                .await
+                .unwrap();
+            assert!(!aborted);
+
+            let response_line = server_task.await.unwrap();
+            let expected_response = SvnItem::List(vec![
+                SvnItem::Word("success".to_string()),
+                SvnItem::List(Vec::new()),
+            ]);
+            assert_eq!(response_line, encode_line(&expected_response));
+            assert_eq!(
+                handler.events,
+                vec![EditorEvent::TargetRev { rev: 42 }, EditorEvent::CloseEdit]
+            );
+        });
+    }
+
+    #[test]
+    fn drive_editor_async_sends_failure_and_drains_on_handler_error() {
+        run_async(async {
+            let (mut conn, mut server) = connected_conn().await;
+
+            struct Failer;
+
+            impl AsyncEditorEventHandler for Failer {
+                fn on_event<'a>(
+                    &'a mut self,
+                    event: EditorEvent,
+                ) -> Pin<Box<dyn Future<Output = Result<(), SvnError>> + Send + 'a>>
+                {
+                    Box::pin(async move {
+                        if matches!(event, EditorEvent::TargetRev { .. }) {
+                            return Err(SvnError::Protocol("boom".into()));
+                        }
+                        Ok(())
+                    })
+                }
+            }
+
+            let expected_failure = SvnItem::List(vec![
+                SvnItem::Word("failure".to_string()),
+                SvnItem::List(vec![SvnItem::List(vec![
+                    SvnItem::Number(1),
+                    SvnItem::String(b"protocol error: boom".to_vec()),
+                    SvnItem::String(Vec::new()),
+                    SvnItem::Number(0),
+                ])]),
+            ]);
+
+            let server_task = tokio::spawn(async move {
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("target-rev".to_string()),
+                        SvnItem::List(vec![SvnItem::Number(1)]),
+                    ]),
+                )
+                .await;
+
+                let failure_line = read_line(&mut server).await;
+
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("abort-edit".to_string()),
+                        SvnItem::List(Vec::new()),
+                    ]),
+                )
+                .await;
+
+                (failure_line, server)
+            });
+
+            let mut handler = Failer;
+            let aborted = drive_editor_async(&mut conn, Some(&mut handler), false)
+                .await
+                .unwrap();
+            assert!(aborted);
+
+            let (failure_line, mut server) = server_task.await.unwrap();
+            assert_eq!(failure_line, encode_line(&expected_failure));
+
+            let no_response =
+                tokio::time::timeout(Duration::from_millis(50), read_line(&mut server)).await;
+            assert!(no_response.is_err());
+        });
+    }
+
+    #[test]
+    fn drive_editor_async_sends_failure_instead_of_success_on_close_edit_handler_error() {
+        run_async(async {
+            let (mut conn, mut server) = connected_conn().await;
+
+            struct Failer;
+
+            impl AsyncEditorEventHandler for Failer {
+                fn on_event<'a>(
+                    &'a mut self,
+                    event: EditorEvent,
+                ) -> Pin<Box<dyn Future<Output = Result<(), SvnError>> + Send + 'a>>
+                {
+                    Box::pin(async move {
+                        if matches!(event, EditorEvent::CloseEdit) {
+                            return Err(SvnError::Protocol("boom".into()));
+                        }
+                        Ok(())
+                    })
+                }
+            }
+
+            let expected_failure = SvnItem::List(vec![
+                SvnItem::Word("failure".to_string()),
+                SvnItem::List(vec![SvnItem::List(vec![
+                    SvnItem::Number(1),
+                    SvnItem::String(b"protocol error: boom".to_vec()),
+                    SvnItem::String(Vec::new()),
+                    SvnItem::Number(0),
+                ])]),
+            ]);
+
+            let server_task = tokio::spawn(async move {
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("close-edit".to_string()),
+                        SvnItem::List(Vec::new()),
+                    ]),
+                )
+                .await;
+                read_line(&mut server).await
+            });
+
+            let mut handler = Failer;
+            let aborted = drive_editor_async(&mut conn, Some(&mut handler), false)
                 .await
                 .unwrap();
             assert!(aborted);

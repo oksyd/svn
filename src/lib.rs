@@ -76,7 +76,9 @@ mod url;
 
 pub use client::{RaSvnClient, RaSvnSession};
 pub use commit::{CommitBuilder, CommitStreamBuilder, SvndiffMode};
-pub use editor::{EditorCommand, EditorEvent, EditorEventHandler, Report, ReportCommand};
+pub use editor::{
+    AsyncEditorEventHandler, EditorCommand, EditorEvent, EditorEventHandler, Report, ReportCommand,
+};
 pub use error::{ServerError, ServerErrorItem, SvnError};
 pub use export::FsEditor;
 pub use pool::{PooledSession, SessionPool};
