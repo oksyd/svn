@@ -44,6 +44,8 @@ pub struct RaSvnClient {
     read_timeout: Duration,
     write_timeout: Duration,
     ra_client: String,
+    #[cfg(feature = "ssh")]
+    ssh: Option<crate::ssh::SshConfig>,
 }
 
 /// A connected, stateful session to an `svn://` server.
@@ -82,6 +84,8 @@ impl RaSvnClient {
             read_timeout: Duration::from_secs(60),
             write_timeout: Duration::from_secs(60),
             ra_client: "prototype-ra_svn".to_string(),
+            #[cfg(feature = "ssh")]
+            ssh: None,
         }
     }
 
@@ -148,6 +152,16 @@ impl RaSvnClient {
         self
     }
 
+    /// Sets the SSH transport configuration for `svn+ssh://` URLs.
+    ///
+    /// This is ignored for `svn://` URLs.
+    #[cfg(feature = "ssh")]
+    #[must_use]
+    pub fn with_ssh_config(mut self, ssh: crate::ssh::SshConfig) -> Self {
+        self.ssh = Some(ssh);
+        self
+    }
+
     /// Opens a new TCP connection, performs the `ra_svn` handshake, and returns a [`RaSvnSession`].
     pub async fn open_session(&self) -> Result<RaSvnSession, SvnError> {
         let mut session = RaSvnSession {
@@ -171,7 +185,7 @@ impl RaSvnClient {
     /// is dropped, create a new session yourself.
     pub async fn open_session_with_stream<S>(&self, stream: S) -> Result<RaSvnSession, SvnError>
     where
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
     {
         let mut session = RaSvnSession {
             client: self.clone(),
@@ -710,6 +724,28 @@ impl RaSvnClient {
     }
 
     async fn connect(&self) -> Result<(RaSvnConnection, ServerInfo), SvnError> {
+        let is_tunneled = self
+            .base_url
+            .url
+            .get(.."svn+ssh://".len())
+            .is_some_and(|p| p.eq_ignore_ascii_case("svn+ssh://"));
+        if is_tunneled {
+            #[cfg(feature = "ssh")]
+            {
+                let ssh = self.ssh.clone().unwrap_or_default();
+                let stream =
+                    crate::ssh::open_svnserve_tunnel(&self.base_url, &ssh, self.connect_timeout)
+                        .await?;
+                return self.connect_over_stream(stream).await;
+            }
+            #[cfg(not(feature = "ssh"))]
+            {
+                return Err(SvnError::InvalidUrl(
+                    "svn+ssh URLs require the crate feature `ssh`".to_string(),
+                ));
+            }
+        }
+
         let addr = self.base_url.socket_addr();
         let stream = tokio::time::timeout(self.connect_timeout, TcpStream::connect(addr))
             .await
@@ -747,6 +783,7 @@ impl RaSvnClient {
                 #[cfg(feature = "cyrus-sasl")]
                 remote_addrport,
                 url: self.base_url.url.clone(),
+                is_tunneled: false,
                 ra_client: self.ra_client.clone(),
                 read_timeout: self.read_timeout,
                 write_timeout: self.write_timeout,
@@ -761,7 +798,7 @@ impl RaSvnClient {
         stream: S,
     ) -> Result<(RaSvnConnection, ServerInfo), SvnError>
     where
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
     {
         #[cfg(feature = "cyrus-sasl")]
         let (local_addrport, remote_addrport) = (None, None);
@@ -780,6 +817,11 @@ impl RaSvnClient {
                 #[cfg(feature = "cyrus-sasl")]
                 remote_addrport,
                 url: self.base_url.url.clone(),
+                is_tunneled: self
+                    .base_url
+                    .url
+                    .get(.."svn+ssh://".len())
+                    .is_some_and(|p| p.eq_ignore_ascii_case("svn+ssh://")),
                 ra_client: self.ra_client.clone(),
                 read_timeout: self.read_timeout,
                 write_timeout: self.write_timeout,
@@ -891,6 +933,7 @@ impl RaSvnSession {
         F: for<'a> FnMut(
             &'a mut RaSvnConnection,
         ) -> Pin<Box<dyn Future<Output = Result<T, SvnError>> + Send + 'a>>,
+        F: Send,
     {
         let mut attempt = 0usize;
         loop {
@@ -4032,6 +4075,7 @@ mod tests {
                 #[cfg(feature = "cyrus-sasl")]
                 remote_addrport: None,
                 url: client.base_url.url.clone(),
+                is_tunneled: false,
                 ra_client: client.ra_client.clone(),
                 read_timeout: client.read_timeout,
                 write_timeout: client.write_timeout,

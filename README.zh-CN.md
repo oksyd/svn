@@ -38,6 +38,7 @@
 ## 特性
 
 - Async-first 的 `svn://`（`ra_svn`）客户端（不包含 working copy）。
+- 可选 `svn+ssh://`：通过 SSH 隧道连接（`ssh` feature；通过 SSH 运行 `svnserve -t`）。
 - 高层 API：`RaSvnClient` / `RaSvnSession`。
 - 结构化的服务端错误（`code/message/file/line`）并带命令上下文。
 - 可选 `serde` feature：为公开数据类型提供 `Serialize`/`Deserialize`。
@@ -127,6 +128,32 @@ svn = { version = "0.1", features = ["cyrus-sasl"] }
   具体强度取决于所选机制和服务端配置。
 - 默认未开启 `cyrus-sasl` 时，本库不会编译任何 `unsafe` 代码。
 
+## `svn+ssh://`（SSH 隧道）
+
+开启 `ssh` feature 后即可使用 `svn+ssh://` URL（通过 SSH 运行 `svnserve -t`，使用 `russh`）：
+
+```toml
+svn = { version = "0.1", features = ["ssh"] }
+```
+
+```rust,no_run
+use std::path::PathBuf;
+use svn::{RaSvnClient, SshAuth, SshConfig, SvnUrl};
+
+# #[tokio::main] async fn main() -> svn::Result<()> {
+let url = SvnUrl::parse("svn+ssh://example.com/repo")?;
+let ssh = SshConfig::new(SshAuth::KeyFile {
+    path: PathBuf::from("~/.ssh/id_ed25519"),
+    passphrase: None,
+});
+
+let client = RaSvnClient::new(url, None, None).with_ssh_config(ssh);
+let mut session = client.open_session().await?;
+let head = session.get_latest_rev().await?;
+println!("{head}");
+# Ok(()) }
+```
+
 ## 已支持的操作
 
 本库面向 `ra_svn` 协议 v2，目前支持：
@@ -180,15 +207,17 @@ RUST_LOG=svn=debug
 
 ## 兼容性
 
-- 协议：`ra_svn` v2（仅 `svn://`）。
+- 协议：`ra_svn` v2（`svn://`，以及开启 `ssh` feature 后的 `svn+ssh://`）。
 - IPv6：支持带中括号的 URL（例如 `svn://[::1]/repo`）。
 - MSRV：Rust `1.92.0`（见 `Cargo.toml`）。
 - `serde`：通过 `serde` feature 可选开启。
 - Cyrus SASL：通过 `cyrus-sasl` feature 可选开启（运行时依赖 `libsasl2`）。
+- SSH 隧道：通过 `ssh` feature 可选开启（`russh`）。
 
 ## 安全性
 
 - `svn://` 是纯 TCP（不提供原生 TLS）。
+- `svn+ssh://` 使用 SSH 进行传输加密与认证。
 - `PLAIN` 会在未加密的链路上发送凭据，除非你使用安全隧道（VPN / SSH 端口转发 / stunnel）或协商到 SASL security layer。
 - 即使使用 `CRAM-MD5`，仓库数据流量仍然不会自动加密；仍需要隧道或 SASL security layer。
 
@@ -208,9 +237,9 @@ SVN_INTEROP=1 cargo test --all-features --test interop_svnserve -- --nocapture
 
 ## 限制
 
-- 不支持 `svn+ssh://`。
 - 不是 working copy 客户端（不提供 checkout / 本地工作副本更新）。
 - 不提供原生 TLS（见 [安全性](#安全性)）。
+- `ssh` feature 支持读取 `~/.ssh/config` 的部分字段并支持 ssh-agent（暂不支持 ProxyJump/ProxyCommand）。
 
 ## 许可证
 

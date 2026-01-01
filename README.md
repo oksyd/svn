@@ -38,6 +38,7 @@
 ## Features
 
 - Async-first `svn://` (`ra_svn`) client (no working copy).
+- Optional `svn+ssh://` via SSH tunnel (`ssh` feature; runs `svnserve -t` over SSH).
 - High-level API: `RaSvnClient` / `RaSvnSession`.
 - Structured server errors (`code/message/file/line`) with command context.
 - `serde` feature for public data types.
@@ -133,6 +134,33 @@ Notes:
   mechanism and server configuration.
 - When `cyrus-sasl` is disabled (the default), the crate stays `unsafe`-free.
 
+## `svn+ssh://` (SSH tunnel)
+
+Enable the `ssh` feature to connect using `svn+ssh://` URLs (runs `svnserve -t`
+over SSH using `russh`):
+
+```toml
+svn = { version = "0.1", features = ["ssh"] }
+```
+
+```rust,no_run
+use std::path::PathBuf;
+use svn::{RaSvnClient, SshAuth, SshConfig, SvnUrl};
+
+# #[tokio::main] async fn main() -> svn::Result<()> {
+let url = SvnUrl::parse("svn+ssh://example.com/repo")?;
+let ssh = SshConfig::new(SshAuth::KeyFile {
+    path: PathBuf::from("~/.ssh/id_ed25519"),
+    passphrase: None,
+});
+
+let client = RaSvnClient::new(url, None, None).with_ssh_config(ssh);
+let mut session = client.open_session().await?;
+let head = session.get_latest_rev().await?;
+println!("{head}");
+# Ok(()) }
+```
+
 ## Supported operations
 
 This crate focuses on `ra_svn` protocol v2 and currently supports:
@@ -186,15 +214,17 @@ RUST_LOG=svn=debug
 
 ## Compatibility
 
-- Protocol: `ra_svn` v2 (`svn://` only).
+- Protocol: `ra_svn` v2 (`svn://`, and `svn+ssh://` with the `ssh` feature).
 - IPv6: supported via bracketed URLs (for example `svn://[::1]/repo`).
 - MSRV: Rust `1.92.0` (see `Cargo.toml`).
 - Optional `serde` support via the `serde` feature.
 - Optional Cyrus SASL support via `cyrus-sasl` (runtime `libsasl2`).
+- Optional SSH tunnel support via `ssh` (`russh`).
 
 ## Security
 
 - `svn://` is plain TCP (no native TLS).
+- `svn+ssh://` uses SSH for transport encryption and authentication.
 - `PLAIN` sends credentials without encryption unless you use a secure tunnel
   (VPN / SSH port forwarding / stunnel) or negotiate a SASL security layer.
 - Even with `CRAM-MD5`, repository traffic is still unencrypted unless a tunnel
@@ -216,9 +246,9 @@ SVN_INTEROP=1 cargo test --all-features --test interop_svnserve -- --nocapture
 
 ## Limitations
 
-- No `svn+ssh://` support.
 - Not a working copy client (no checkout / update of a local working copy).
 - No native TLS (see [Security](#security)).
+- The `ssh` feature supports a subset of `~/.ssh/config` and ssh-agent (no ProxyJump/ProxyCommand).
 
 ## License
 

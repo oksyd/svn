@@ -87,6 +87,7 @@ pub(crate) struct RaSvnConnectionConfig {
     pub(crate) local_addrport: Option<String>,
     #[cfg(feature = "cyrus-sasl")]
     pub(crate) remote_addrport: Option<String>,
+    pub(crate) is_tunneled: bool,
     pub(crate) url: String,
     pub(crate) ra_client: String,
     pub(crate) read_timeout: Duration,
@@ -110,6 +111,7 @@ pub(crate) struct RaSvnConnection {
     local_addrport: Option<String>,
     #[cfg(feature = "cyrus-sasl")]
     remote_addrport: Option<String>,
+    is_tunneled: bool,
     url: String,
     ra_client: String,
     read_timeout: Duration,
@@ -135,6 +137,7 @@ impl RaSvnConnection {
             local_addrport: config.local_addrport,
             #[cfg(feature = "cyrus-sasl")]
             remote_addrport: config.remote_addrport,
+            is_tunneled: config.is_tunneled,
             url: config.url,
             ra_client: config.ra_client,
             read_timeout: config.read_timeout,
@@ -159,6 +162,9 @@ impl RaSvnConnection {
     }
 
     pub(crate) async fn handshake(&mut self) -> Result<crate::ServerInfo, SvnError> {
+        if self.is_tunneled {
+            self.skip_leading_garbage().await?;
+        }
         let greeting = self.read_command_response().await?;
         let params = greeting.success_params("greeting")?;
         if params.len() < 4 {
@@ -231,6 +237,71 @@ impl RaSvnConnection {
             server_caps: self.server_caps.clone(),
             repository,
         })
+    }
+
+    async fn skip_leading_garbage(&mut self) -> Result<(), SvnError> {
+        if self.pos < self.buf.len() {
+            let mut saw_lparen = false;
+            for i in self.pos..self.buf.len() {
+                let b = self.buf[i];
+                if saw_lparen && b.is_ascii_whitespace() {
+                    let rest = self.buf[i..].to_vec();
+                    self.buf.clear();
+                    self.buf.push(b'(');
+                    self.buf.extend_from_slice(&rest);
+                    self.pos = 0;
+                    return Ok(());
+                }
+                saw_lparen = b == b'(';
+            }
+        }
+
+        self.buf.clear();
+        self.pos = 0;
+
+        const MAX_GARBAGE: usize = 64 * 1024;
+        const PREVIEW_MAX: usize = 1024;
+        let mut preview = Vec::<u8>::new();
+
+        let mut temp = [0u8; 256];
+        let mut total_discarded = 0usize;
+        let mut saw_lparen = false;
+        loop {
+            let n = tokio::time::timeout(self.read_timeout, self.read.read(&mut temp))
+                .await
+                .map_err(|_| {
+                    SvnError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "read timed out",
+                    ))
+                })??;
+            if n == 0 {
+                return Err(SvnError::Protocol("unexpected EOF".into()));
+            }
+
+            if preview.len() < PREVIEW_MAX {
+                let take = (PREVIEW_MAX - preview.len()).min(n);
+                preview.extend_from_slice(&temp[..take]);
+            }
+
+            total_discarded = total_discarded.saturating_add(n);
+            if total_discarded > MAX_GARBAGE {
+                let preview = String::from_utf8_lossy(&preview).to_string();
+                return Err(SvnError::Protocol(format!(
+                    "tunnel produced non-svn output before greeting; discarded >{MAX_GARBAGE} bytes; start of output: {preview:?}"
+                )));
+            }
+
+            for (idx, b) in temp[..n].iter().copied().enumerate() {
+                if saw_lparen && b.is_ascii_whitespace() {
+                    self.buf.push(b'(');
+                    self.buf.extend_from_slice(&temp[idx..n]);
+                    self.pos = 0;
+                    return Ok(());
+                }
+                saw_lparen = b == b'(';
+            }
+        }
     }
 
     pub(crate) async fn call(
@@ -545,6 +616,10 @@ impl RaSvnConnection {
 
         let mut out = Vec::new();
 
+        if self.is_tunneled && mechs.iter().any(|m| m == "EXTERNAL") {
+            out.push(("EXTERNAL".to_string(), Some(Vec::new())));
+        }
+
         if has_user && has_pass && mechs.iter().any(|m| m == "CRAM-MD5") {
             out.push(("CRAM-MD5".to_string(), None));
         }
@@ -560,7 +635,7 @@ impl RaSvnConnection {
             out.push(("PLAIN".to_string(), Some(token)));
         }
 
-        if out.is_empty() && mechs.iter().any(|m| m == "ANONYMOUS") {
+        if mechs.iter().any(|m| m == "ANONYMOUS") {
             out.push(("ANONYMOUS".to_string(), Some(Vec::new())));
         }
 
@@ -810,7 +885,7 @@ impl RaSvnConnection {
     }
 
     pub(crate) async fn data_available(&mut self) -> Result<bool, SvnError> {
-        while self.pos < self.buf.len() && matches!(self.buf[self.pos], b' ' | b'\n') {
+        while self.pos < self.buf.len() && self.buf[self.pos].is_ascii_whitespace() {
             self.pos += 1;
         }
         if self.pos < self.buf.len() {
@@ -843,7 +918,7 @@ impl RaSvnConnection {
                     self.buf.extend_from_slice(&temp[..n]);
                 }
 
-                while self.pos < self.buf.len() && matches!(self.buf[self.pos], b' ' | b'\n') {
+                while self.pos < self.buf.len() && self.buf[self.pos].is_ascii_whitespace() {
                     self.pos += 1;
                 }
                 if self.pos < self.buf.len() {
@@ -1017,7 +1092,7 @@ impl RaSvnConnection {
 async fn skip_ws(conn: &mut RaSvnConnection) -> Result<(), SvnError> {
     loop {
         let b = conn.peek_byte().await?;
-        if b == b' ' || b == b'\n' {
+        if b.is_ascii_whitespace() {
             let _ = conn.consume_byte().await?;
             continue;
         }
@@ -1028,7 +1103,7 @@ async fn skip_ws(conn: &mut RaSvnConnection) -> Result<(), SvnError> {
 
 async fn require_ws(conn: &mut RaSvnConnection) -> Result<(), SvnError> {
     let b = conn.consume_byte().await?;
-    if b == b' ' || b == b'\n' {
+    if b.is_ascii_whitespace() {
         Ok(())
     } else {
         Err(SvnError::Protocol("expected whitespace".into()))
@@ -1055,7 +1130,7 @@ async fn parse_word(conn: &mut RaSvnConnection) -> Result<String, SvnError> {
     let mut bytes = Vec::new();
     loop {
         let b = conn.peek_byte().await?;
-        if b == b' ' || b == b'\n' {
+        if b.is_ascii_whitespace() {
             break;
         }
         if b == b'(' || b == b')' || b == b':' {
@@ -1084,9 +1159,10 @@ mod tests {
             .block_on(f)
     }
 
-    async fn connected_conn(
+    async fn connected_conn_inner(
         username: Option<String>,
         password: Option<String>,
+        is_tunneled: bool,
     ) -> (RaSvnConnection, tokio::net::TcpStream) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1107,7 +1183,12 @@ mod tests {
                 local_addrport: None,
                 #[cfg(feature = "cyrus-sasl")]
                 remote_addrport: None,
-                url: "svn://example.com:3690/repo".to_string(),
+                is_tunneled,
+                url: if is_tunneled {
+                    "svn+ssh://example.com:22/repo".to_string()
+                } else {
+                    "svn://example.com:3690/repo".to_string()
+                },
                 ra_client: "test-ra_svn".to_string(),
                 read_timeout: Duration::from_secs(1),
                 write_timeout: Duration::from_secs(1),
@@ -1115,6 +1196,20 @@ mod tests {
         );
 
         (conn, server)
+    }
+
+    async fn connected_conn(
+        username: Option<String>,
+        password: Option<String>,
+    ) -> (RaSvnConnection, tokio::net::TcpStream) {
+        connected_conn_inner(username, password, false).await
+    }
+
+    async fn connected_conn_tunneled(
+        username: Option<String>,
+        password: Option<String>,
+    ) -> (RaSvnConnection, tokio::net::TcpStream) {
+        connected_conn_inner(username, password, true).await
     }
 
     async fn write_item_line(stream: &mut tokio::net::TcpStream, item: &SvnItem) {
@@ -1266,6 +1361,17 @@ mod tests {
             let mechs = vec!["ANONYMOUS".to_string()];
             let (mech, token) = conn.select_mech(&mechs).unwrap();
             assert_eq!(mech, "ANONYMOUS");
+            assert_eq!(token.unwrap(), Vec::<u8>::new());
+        });
+    }
+
+    #[test]
+    fn select_mech_prefers_external_when_tunneled() {
+        run_async(async {
+            let (conn, _server) = connected_conn_tunneled(None, None).await;
+            let mechs = vec!["ANONYMOUS".to_string(), "EXTERNAL".to_string()];
+            let (mech, token) = conn.select_mech(&mechs).unwrap();
+            assert_eq!(mech, "EXTERNAL");
             assert_eq!(token.unwrap(), Vec::<u8>::new());
         });
     }
@@ -1497,6 +1603,79 @@ mod tests {
                     .iter()
                     .any(|c| c == "mergeinfo")
             );
+            server_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn handshake_skips_leading_garbage_for_tunneled_connections() {
+        run_async(async {
+            let (mut conn, mut server) = connected_conn_tunneled(None, None).await;
+
+            let server_task = tokio::spawn(async move {
+                server
+                    .write_all(b"Last login: Thu Jan 01 00:00:00 1970\\n")
+                    .await
+                    .unwrap();
+                server.flush().await.unwrap();
+
+                let greeting = SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::Number(2),
+                        SvnItem::Number(2),
+                        SvnItem::List(Vec::new()),
+                        SvnItem::List(vec![
+                            SvnItem::Word("edit-pipeline".to_string()),
+                            SvnItem::Word("svndiff1".to_string()),
+                        ]),
+                    ]),
+                ]);
+                write_item_line(&mut server, &greeting).await;
+
+                let client_greeting = read_until_newline(&mut server).await;
+                let expected = SvnItem::List(vec![
+                    SvnItem::Number(2),
+                    SvnItem::List(vec![
+                        SvnItem::Word("edit-pipeline".to_string()),
+                        SvnItem::Word("svndiff1".to_string()),
+                        SvnItem::Word("accepts-svndiff2".to_string()),
+                        SvnItem::Word("absent-entries".to_string()),
+                        SvnItem::Word("depth".to_string()),
+                        SvnItem::Word("mergeinfo".to_string()),
+                        SvnItem::Word("log-revprops".to_string()),
+                    ]),
+                    SvnItem::String(b"svn+ssh://example.com:22/repo".to_vec()),
+                    SvnItem::String(b"test-ra_svn".to_vec()),
+                    SvnItem::List(Vec::new()),
+                ]);
+                let mut expected_bytes = Vec::new();
+                encode_item(&expected, &mut expected_bytes);
+                expected_bytes.push(b'\n');
+                assert_eq!(client_greeting, expected_bytes);
+
+                let auth_request = SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::List(Vec::new()),
+                        SvnItem::String(b"realm".to_vec()),
+                    ]),
+                ]);
+                write_item_line(&mut server, &auth_request).await;
+
+                let repos_info = SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::String(b"uuid".to_vec()),
+                        SvnItem::String(b"svn://example.com/repo".to_vec()),
+                        SvnItem::List(vec![SvnItem::Word("mergeinfo".to_string())]),
+                    ]),
+                ]);
+                write_item_line(&mut server, &repos_info).await;
+            });
+
+            let info = conn.handshake().await.unwrap();
+            assert_eq!(info.repository.uuid, "uuid");
             server_task.await.unwrap();
         });
     }

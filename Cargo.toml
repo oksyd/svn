@@ -29,6 +29,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 serde = ["dep:serde"]
 cyrus-sasl = ["dep:base64", "dep:libloading"]
+ssh = ["dep:russh"]
 
 [lints.rust]
 unsafe_code = "deny"
@@ -53,6 +54,7 @@ flate2 = { version = "1.1.5", default-features = false, features = ["rust_backen
 libloading = { version = "0.9.0", default-features = false, optional = true }
 lz4_flex = { version = "0.12.0", default-features = false, features = ["std"] }
 md-5 = { version = "0.10.6", default-features = false, features = ["std"] }
+russh = { version = "0.56.0", default-features = false, features = ["ring", "rsa"], optional = true }
 serde = { version = "1.0.228", default-features = false, features = ["derive", "std"], optional = true }
 thiserror = { version = "2.0.17", default-features = false, features = ["std"] }
 tokio = { version = "1.48.0", default-features = false, features = ["fs", "io-util", "net", "rt", "sync", "time"] }

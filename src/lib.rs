@@ -37,10 +37,12 @@
 //! - `serde`: enables `Serialize`/`Deserialize` for public data types.
 //! - `cyrus-sasl`: enables Cyrus SASL authentication and (when negotiated)
 //!   the SASL security layer (requires a system-provided `libsasl2` at runtime).
+//! - `ssh`: enables `svn+ssh://` by running `svnserve -t` over SSH (via `russh`).
 //!
 //! ## Protocol notes
 //!
-//! - Only `svn://` is supported (no `svn+ssh://`).
+//! - `svn://` is supported.
+//! - `svn+ssh://` is supported with the `ssh` feature (see `SshConfig`).
 //! - IPv6 URLs must use brackets (for example `svn://[::1]/repo`).
 //! - Built-in authentication mechanisms: `ANONYMOUS`, `PLAIN`, and `CRAM-MD5`.
 //!   With `cyrus-sasl`, the client can also use Cyrus SASL (including the
@@ -69,6 +71,8 @@ mod options;
 mod path;
 mod pool;
 mod rasvn;
+#[cfg(feature = "ssh")]
+mod ssh;
 mod svndiff;
 mod textdelta;
 mod types;
@@ -85,6 +89,8 @@ pub use pool::{
     PooledSession, SessionPool, SessionPoolConfig, SessionPoolHealthCheck, SessionPoolKey,
     SessionPools,
 };
+#[cfg(feature = "ssh")]
+pub use ssh::{SshAuth, SshConfig, SshHostKeyPolicy};
 pub use textdelta::{
     RecordedTextDelta, TextDeltaApplier, TextDeltaApplierSync, TextDeltaRecorder, apply_textdelta,
     apply_textdelta_sync,

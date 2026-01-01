@@ -797,6 +797,7 @@ mod tests {
                 local_addrport: None,
                 #[cfg(feature = "cyrus-sasl")]
                 remote_addrport: None,
+                is_tunneled: false,
                 url: "svn://example.com:3690/repo".to_string(),
                 ra_client: "test-ra_svn".to_string(),
                 read_timeout: Duration::from_secs(1),

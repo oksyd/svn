@@ -207,10 +207,7 @@ impl SessionPool {
 
         let now = Instant::now();
         let session = loop {
-            let entry = match self.inner.idle.lock() {
-                Ok(mut idle) => idle.pop(),
-                Err(_) => None,
-            };
+            let entry = self.inner.pop_idle_session();
 
             let Some(entry) = entry else {
                 break None;
@@ -284,6 +281,19 @@ impl Inner {
                 .map_err(|_| SvnError::Protocol("session pool closed".into()))
         }
     }
+
+    fn pop_idle_session(&self) -> Option<IdleSession> {
+        self.idle.lock().ok().and_then(|mut idle| idle.pop())
+    }
+
+    fn push_idle_session(&self, session: RaSvnSession) {
+        if let Ok(mut idle) = self.idle.lock() {
+            idle.push(IdleSession {
+                session,
+                idle_since: Instant::now(),
+            });
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -335,13 +345,8 @@ impl DerefMut for PooledSession {
 
 impl Drop for PooledSession {
     fn drop(&mut self) {
-        if let Some(session) = self.session.take()
-            && let Ok(mut idle) = self.inner.idle.lock()
-        {
-            idle.push(IdleSession {
-                session,
-                idle_since: Instant::now(),
-            });
+        if let Some(session) = self.session.take() {
+            self.inner.push_idle_session(session);
         }
 
         // Release the permit after returning to the pool, so waiters can reuse
@@ -609,6 +614,14 @@ mod tests {
     #[test]
     fn session_pool_reuses_sessions_and_limits_connections() {
         run_async(async {
+            fn assert_send<T: Send>() {}
+            fn assert_sync<T: Sync>() {}
+            assert_send::<SessionPool>();
+            assert_sync::<SessionPool>();
+            assert_send::<PooledSession>();
+            assert_send::<RaSvnSession>();
+            assert_send::<OwnedSemaphorePermit>();
+
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
 
@@ -682,6 +695,9 @@ mod tests {
             let client = RaSvnClient::new(url, None, None);
             let pool = SessionPool::new(client, 2).unwrap();
 
+            fn assert_send_future<F: Future + Send>(_: F) {}
+            assert_send_future(pool.inner.acquire_permit());
+
             let in_flight = Arc::new(AtomicUsize::new(0));
             let max_observed = Arc::new(AtomicUsize::new(0));
 
@@ -690,6 +706,10 @@ mod tests {
                 let pool = pool.clone();
                 let in_flight = in_flight.clone();
                 let max_observed = max_observed.clone();
+
+                fn assert_send_future<F: Future + Send>(_: F) {}
+                assert_send_future(pool.session());
+
                 tasks.push(tokio::spawn(async move {
                     let _session = pool.session().await.unwrap();
                     let cur = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
@@ -947,6 +967,12 @@ mod tests {
     #[test]
     fn session_pools_partitions_by_custom_key() {
         run_async(async {
+            fn assert_send<T: Send>() {}
+            fn assert_sync<T: Sync>() {}
+            assert_send::<SessionPools>();
+            assert_sync::<SessionPools>();
+            assert_send::<PooledSession>();
+
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
 
@@ -980,6 +1006,10 @@ mod tests {
             for key in ["a", "b"] {
                 let pools = pools.clone();
                 let client = client.clone();
+
+                fn assert_send_future<F: Future + Send>(_: F) {}
+                assert_send_future(pools.session_with_key(client.clone(), key));
+
                 tasks.push(tokio::spawn(async move {
                     let _session = pools.session_with_key(client, key).await.unwrap();
                     tokio::time::sleep(Duration::from_millis(50)).await;
