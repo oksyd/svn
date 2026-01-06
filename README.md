@@ -93,6 +93,20 @@ async fn main() -> svn::Result<()> {
 }
 ```
 
+## Examples
+
+All examples are in `examples/` and are intended to be copy-pasteable.
+
+- Read-only smoke: `SVN_URL=... cargo run --example readonly`
+- Resumable log stream: `SVN_URL=... cargo run --example log_retry`
+- Fetch a file (+ props/iprops): `SVN_URL=... SVN_FILE=... cargo run --example get_file`
+- Directory listing: `SVN_URL=... cargo run --example list`
+- Export a subtree to disk: `SVN_URL=... SVN_DEST=... cargo run --example export`
+- Pooling: `SVN_URL=... cargo run --example pool` / `SVN_URLS=... cargo run --example session_pools`
+- Editor drives: `update_events`, `status_events`, `diff_events`, `switch_events`, `replay_events`, `replay_range_events`
+- Write operations (opt-in): `SVN_WRITE=1 cargo run --example commit` / `SVN_WRITE=1 cargo run --example locks`
+- Optional features: `cargo run --example ssh --features ssh`, `cargo run --example sasl --features cyrus-sasl`
+
 ## Configuration
 
 `RaSvnClient` is cheap to clone and provides builder-style methods:

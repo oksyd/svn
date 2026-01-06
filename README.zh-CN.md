@@ -92,6 +92,20 @@ async fn main() -> svn::Result<()> {
 }
 ```
 
+## 示例
+
+所有示例都在 `examples/` 目录下，尽量做到可直接复制粘贴运行。
+
+- 只读 smoke：`SVN_URL=... cargo run --example readonly`
+- 可恢复的 log 流式读取：`SVN_URL=... cargo run --example log_retry`
+- 获取单文件（含 props/iprops）：`SVN_URL=... SVN_FILE=... cargo run --example get_file`
+- 目录列举：`SVN_URL=... cargo run --example list`
+- 导出到本地目录：`SVN_URL=... SVN_DEST=... cargo run --example export`
+- 连接池：`SVN_URL=... cargo run --example pool` / `SVN_URLS=... cargo run --example session_pools`
+- Editor 驱动：`update_events`、`status_events`、`diff_events`、`switch_events`、`replay_events`、`replay_range_events`
+- 写操作（默认关闭）：`SVN_WRITE=1 cargo run --example commit` / `SVN_WRITE=1 cargo run --example locks`
+- 可选特性：`cargo run --example ssh --features ssh`，`cargo run --example sasl --features cyrus-sasl`
+
 ## 配置
 
 `RaSvnClient` 支持 builder 风格配置：
