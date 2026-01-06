@@ -1,8 +1,21 @@
+## [0.1.5] - 2026-01-06
+
+### 🚀 Features
+
+- Add svn+ssh:// support
+
+### 🐛 Bug Fixes
+
+- Reconnect and retry ra_svn ops on unexpected EOF
 ## [0.1.4] - 2025-12-29
 
 ### 🐛 Bug Fixes
 
 - Remove doc_auto_cfg for docs.rs
+
+### ⚙️ Miscellaneous Tasks
+
+- Release svn version 0.1.4
 ## [0.1.3] - 2025-12-29
 
 ### 🚀 Features
