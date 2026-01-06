@@ -43,6 +43,7 @@ pub struct RaSvnClient {
     connect_timeout: Duration,
     read_timeout: Duration,
     write_timeout: Duration,
+    reconnect_retries: usize,
     ra_client: String,
     #[cfg(feature = "ssh")]
     ssh: Option<crate::ssh::SshConfig>,
@@ -83,6 +84,7 @@ impl RaSvnClient {
             connect_timeout: Duration::from_secs(10),
             read_timeout: Duration::from_secs(60),
             write_timeout: Duration::from_secs(60),
+            reconnect_retries: 1,
             ra_client: "prototype-ra_svn".to_string(),
             #[cfg(feature = "ssh")]
             ssh: None,
@@ -150,6 +152,26 @@ impl RaSvnClient {
     pub fn with_ra_client(mut self, ra_client: impl Into<String>) -> Self {
         self.ra_client = ra_client.into();
         self
+    }
+
+    /// Sets how many times to reconnect and retry an operation on transient
+    /// connection failures (for example `unexpected EOF`).
+    ///
+    /// This affects:
+    /// - the initial handshake performed by [`RaSvnClient::open_session`];
+    /// - per-operation reconnects performed by [`RaSvnSession`] methods that use
+    ///   automatic retry.
+    ///
+    /// `0` disables retries (one attempt only). The default is `1`.
+    #[must_use]
+    pub fn with_reconnect_retries(mut self, retries: usize) -> Self {
+        self.reconnect_retries = retries;
+        self
+    }
+
+    /// Returns the configured reconnect retry count.
+    pub fn reconnect_retries(&self) -> usize {
+        self.reconnect_retries
     }
 
     /// Sets the SSH transport configuration for `svn+ssh://` URLs.
@@ -277,6 +299,19 @@ impl RaSvnClient {
     {
         let mut session = self.open_session().await?;
         session.log_each(options, on_entry).await
+    }
+
+    /// Convenience wrapper for [`RaSvnSession::log_each_retrying`].
+    pub async fn log_each_retrying<F>(
+        &self,
+        options: &LogOptions,
+        on_entry: F,
+    ) -> Result<(), SvnError>
+    where
+        F: FnMut(LogEntry) -> Result<(), SvnError> + Send,
+    {
+        let mut session = self.open_session().await?;
+        session.log_each_retrying(options, on_entry).await
     }
 
     /// Convenience wrapper for [`RaSvnSession::get_dated_rev`].
@@ -915,10 +950,27 @@ impl RaSvnSession {
                 "reconnect not supported for this session".to_string(),
             ));
         }
-        let (conn, server_info) = self.client.connect().await?;
-        self.conn = Some(conn);
-        self.server_info = Some(server_info);
-        Ok(())
+        let mut attempt = 0usize;
+        loop {
+            match self.client.connect().await {
+                Ok((conn, server_info)) => {
+                    self.conn = Some(conn);
+                    self.server_info = Some(server_info);
+                    return Ok(());
+                }
+                Err(err) if attempt < self.client.reconnect_retries && is_retryable_error(&err) => {
+                    attempt += 1;
+                    debug!(
+                        attempt,
+                        max_retries = self.client.reconnect_retries,
+                        error = %err,
+                        "connect failed; reconnecting and retrying"
+                    );
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     async fn ensure_connected(&mut self) -> Result<(), SvnError> {
@@ -944,10 +996,21 @@ impl RaSvnSession {
             };
             match result {
                 Ok(v) => return Ok(v),
-                Err(err) if attempt == 0 && self.allow_reconnect && is_retryable_error(&err) => {
-                    debug!(op, error = %err, "connection lost; reconnecting and retrying");
-                    self.reconnect().await?;
+                Err(err)
+                    if self.allow_reconnect
+                        && is_retryable_error(&err)
+                        && attempt < self.client.reconnect_retries =>
+                {
                     attempt += 1;
+                    debug!(
+                        op,
+                        attempt,
+                        max_retries = self.client.reconnect_retries,
+                        error = %err,
+                        "connection lost; reconnecting and retrying"
+                    );
+                    self.conn = None;
+                    self.reconnect().await?;
                 }
                 Err(err) => return Err(err),
             }
@@ -1957,7 +2020,12 @@ impl RaSvnSession {
                     }
                     return Ok(result);
                 }
-                Err(err) if attempt == 0 && written == 0 && is_retryable_error(&err) => {
+                Err(err)
+                    if self.allow_reconnect
+                        && written == 0
+                        && is_retryable_error(&err)
+                        && attempt < self.client.reconnect_retries =>
+                {
                     debug!("get-file connection lost before data; reconnecting and retrying");
                     self.reconnect().await?;
                     attempt += 1;
@@ -3414,6 +3482,54 @@ impl RaSvnSession {
         result
     }
 
+    /// Runs `log` with a [`LogOptions`] builder, streaming entries to `on_entry`,
+    /// with automatic retry on transient connection loss.
+    ///
+    /// When a retry happens, the `log` command is restarted. To avoid calling
+    /// `on_entry` multiple times for the same revision, this method suppresses
+    /// entries with a revision number that was already observed.
+    pub async fn log_each_retrying<F>(
+        &mut self,
+        options: &LogOptions,
+        mut on_entry: F,
+    ) -> Result<(), SvnError>
+    where
+        F: FnMut(LogEntry) -> Result<(), SvnError> + Send,
+    {
+        let mut attempt = 0usize;
+        let mut seen = std::collections::HashSet::<u64>::new();
+        loop {
+            let result = self
+                .log_each(options, |entry| {
+                    if seen.insert(entry.rev) {
+                        on_entry(entry)
+                    } else {
+                        Ok(())
+                    }
+                })
+                .await;
+
+            match result {
+                Ok(()) => return Ok(()),
+                Err(err)
+                    if self.allow_reconnect
+                        && is_retryable_error(&err)
+                        && attempt < self.client.reconnect_retries =>
+                {
+                    attempt += 1;
+                    debug!(
+                        attempt,
+                        max_retries = self.client.reconnect_retries,
+                        error = %err,
+                        "log interrupted; reconnecting and resuming"
+                    );
+                    self.conn = None;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
     /// Runs `get-dir` and returns a directory listing.
     pub async fn list_dir(&mut self, path: &str, rev: Option<u64>) -> Result<DirListing, SvnError> {
         let path = validate_rel_dir_path(path)?;
@@ -4130,6 +4246,36 @@ mod tests {
                 SvnItem::String(realm.as_bytes().to_vec()),
             ]),
         ])
+    }
+
+    async fn handshake_no_auth(server: &mut tokio::net::TcpStream) {
+        let greeting = SvnItem::List(vec![
+            SvnItem::Word("success".to_string()),
+            SvnItem::List(vec![
+                SvnItem::Number(2),
+                SvnItem::Number(2),
+                SvnItem::List(Vec::new()),
+                SvnItem::List(vec![
+                    SvnItem::Word("edit-pipeline".to_string()),
+                    SvnItem::Word("svndiff1".to_string()),
+                ]),
+            ]),
+        ]);
+        write_item_line(server, &greeting).await;
+
+        let _client_greeting = read_line(server).await;
+
+        write_item_line(server, &auth_request("realm")).await;
+
+        let repos_info = SvnItem::List(vec![
+            SvnItem::Word("success".to_string()),
+            SvnItem::List(vec![
+                SvnItem::String(b"uuid".to_vec()),
+                SvnItem::String(b"svn://example.com/repo".to_vec()),
+                SvnItem::List(Vec::new()),
+            ]),
+        ]);
+        write_item_line(server, &repos_info).await;
     }
 
     #[test]
@@ -5280,6 +5426,66 @@ mod tests {
             assert_eq!(rev, 42);
 
             server_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn get_latest_rev_reconnects_and_retries_on_unexpected_eof() {
+        run_async(async {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+
+            let accepted = Arc::new(AtomicUsize::new(0));
+            let accepted_task = {
+                let accepted = accepted.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let (mut server, _) = listener.accept().await.unwrap();
+                        let attempt = accepted.fetch_add(1, Ordering::SeqCst);
+
+                        handshake_no_auth(&mut server).await;
+
+                        let expected = SvnItem::List(vec![
+                            SvnItem::Word("get-latest-rev".to_string()),
+                            SvnItem::List(Vec::new()),
+                        ]);
+                        assert_eq!(read_line(&mut server).await, encode_line(&expected));
+                        write_item_line(&mut server, &auth_request("realm")).await;
+
+                        if attempt == 0 {
+                            // Drop the connection before sending the command response to force an EOF.
+                            continue;
+                        }
+
+                        write_item_line(
+                            &mut server,
+                            &SvnItem::List(vec![
+                                SvnItem::Word("success".to_string()),
+                                SvnItem::List(vec![SvnItem::Number(42)]),
+                            ]),
+                        )
+                        .await;
+                        break;
+                    }
+                })
+            };
+
+            let url = SvnUrl::parse(&format!("svn://127.0.0.1:{}/repo", addr.port())).unwrap();
+            let client = RaSvnClient::new(url, None, None)
+                .with_connect_timeout(Duration::from_secs(1))
+                .with_read_timeout(Duration::from_secs(1))
+                .with_write_timeout(Duration::from_secs(1))
+                .with_reconnect_retries(1);
+            let mut session = client.open_session().await.unwrap();
+
+            let rev = session.get_latest_rev().await.unwrap();
+            assert_eq!(rev, 42);
+
+            accepted_task.await.unwrap();
+            assert_eq!(accepted.load(Ordering::SeqCst), 2);
         });
     }
 
@@ -6532,6 +6738,121 @@ mod tests {
             assert!(!entry.rev_props.contains_key("svn:log"));
 
             server_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn log_each_retrying_reconnects_and_dedups_on_unexpected_eof() {
+        run_async(async {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+
+            let options = LogOptions {
+                target_paths: vec!["trunk".to_string()],
+                start_rev: Some(2),
+                end_rev: Some(1),
+                changed_paths: false,
+                strict_node: true,
+                limit: 0,
+                include_merged_revisions: false,
+                revprops: LogRevProps::Custom(vec![
+                    "svn:author".to_string(),
+                    "svn:date".to_string(),
+                    "svn:log".to_string(),
+                ]),
+            };
+
+            let expected_log = SvnItem::List(vec![
+                SvnItem::Word("log".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::List(vec![SvnItem::String(b"trunk".to_vec())]),
+                    SvnItem::List(vec![SvnItem::Number(2)]),
+                    SvnItem::List(vec![SvnItem::Number(1)]),
+                    SvnItem::Bool(false),
+                    SvnItem::Bool(true),
+                    SvnItem::Number(0),
+                    SvnItem::Bool(false),
+                    SvnItem::Word("revprops".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::String(b"svn:author".to_vec()),
+                        SvnItem::String(b"svn:date".to_vec()),
+                        SvnItem::String(b"svn:log".to_vec()),
+                    ]),
+                ]),
+            ]);
+
+            let entry_10 = SvnItem::List(vec![
+                SvnItem::List(Vec::new()),
+                SvnItem::Number(10),
+                SvnItem::List(vec![SvnItem::String(b"alice".to_vec())]),
+                SvnItem::List(vec![SvnItem::String(b"2025-01-01".to_vec())]),
+                SvnItem::List(vec![SvnItem::String(b"msg".to_vec())]),
+            ]);
+            let entry_9 = SvnItem::List(vec![
+                SvnItem::List(Vec::new()),
+                SvnItem::Number(9),
+                SvnItem::List(vec![SvnItem::String(b"bob".to_vec())]),
+                SvnItem::List(vec![SvnItem::String(b"2025-01-02".to_vec())]),
+                SvnItem::List(vec![SvnItem::String(b"msg2".to_vec())]),
+            ]);
+
+            let cmd_success = SvnItem::List(vec![
+                SvnItem::Word("success".to_string()),
+                SvnItem::List(Vec::new()),
+            ]);
+
+            let accepted = Arc::new(AtomicUsize::new(0));
+            let accepted_task = {
+                let accepted = accepted.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let (mut server, _) = listener.accept().await.unwrap();
+                        let attempt = accepted.fetch_add(1, Ordering::SeqCst);
+
+                        handshake_no_auth(&mut server).await;
+
+                        assert_eq!(read_line(&mut server).await, encode_line(&expected_log));
+                        write_item_line(&mut server, &auth_request("realm")).await;
+
+                        write_item_line(&mut server, &entry_10).await;
+
+                        if attempt == 0 {
+                            // Drop mid-stream.
+                            continue;
+                        }
+
+                        write_item_line(&mut server, &entry_9).await;
+                        write_item_line(&mut server, &SvnItem::Word("done".to_string())).await;
+                        write_item_line(&mut server, &cmd_success).await;
+                        break;
+                    }
+                })
+            };
+
+            let url = SvnUrl::parse(&format!("svn://127.0.0.1:{}/repo", addr.port())).unwrap();
+            let client = RaSvnClient::new(url, None, None)
+                .with_connect_timeout(Duration::from_secs(1))
+                .with_read_timeout(Duration::from_secs(1))
+                .with_write_timeout(Duration::from_secs(1))
+                .with_reconnect_retries(1);
+            let mut session = client.open_session().await.unwrap();
+
+            let mut revs = Vec::new();
+            session
+                .log_each_retrying(&options, |entry| {
+                    revs.push(entry.rev);
+                    Ok(())
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(revs, vec![10, 9]);
+
+            accepted_task.await.unwrap();
+            assert_eq!(accepted.load(Ordering::SeqCst), 2);
         });
     }
 
