@@ -1,3 +1,10 @@
+## [0.1.6] - 2026-01-06
+
+### ⚙️ Miscellaneous Tasks
+
+- *(ci)* Update ci.yaml
+- Add examples
+- Add benches
 ## [0.1.5] - 2026-01-06
 
 ### 🚀 Features
@@ -7,6 +14,10 @@
 ### 🐛 Bug Fixes
 
 - Reconnect and retry ra_svn ops on unexpected EOF
+
+### ⚙️ Miscellaneous Tasks
+
+- Release svn version 0.1.5
 ## [0.1.4] - 2025-12-29
 
 ### 🐛 Bug Fixes
