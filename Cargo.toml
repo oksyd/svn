@@ -12,14 +12,15 @@ homepage = "https://github.com/lvillis/svn-rs"
 keywords = ["svn", "subversion"]
 categories = ["network-programming"]
 include = [
-    "Cargo.toml",
-    "README.md",
-    "README.zh-CN.md",
-    "LICENSE",
-    "CHANGELOG.md",
-    "src/**",
-    "examples/**",
-    "tests/**",
+  "Cargo.toml",
+  "README.md",
+  "README.zh-CN.md",
+  "LICENSE",
+  "CHANGELOG.md",
+  "src/**",
+  "benches/**",
+  "examples/**",
+  "tests/**",
 ]
 
 [package.metadata.docs.rs]
@@ -63,12 +64,17 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 similar = { version = "2.7.0", default-features = false, features = ["text"] }
 
 [dev-dependencies]
+criterion = "0.8.1"
 proptest = "1.9.0"
 tempfile = "3.24.0"
+
+[[bench]]
+name = "bench"
+harness = false
 
 [package.metadata.release]
 tag-prefix = ""
 tag-name = "{{prefix}}{{version}}"
 pre-release-commit-message = "chore: release {{crate_name}} version {{version}}"
 tag-message = "chore: release {{crate_name}} version {{version}}"
-pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}" ]
+pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}"]
