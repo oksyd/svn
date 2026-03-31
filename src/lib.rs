@@ -74,6 +74,8 @@ mod rasvn;
 #[cfg(feature = "ssh")]
 mod ssh;
 mod svndiff;
+#[cfg(test)]
+mod test_support;
 mod textdelta;
 mod types;
 mod url;

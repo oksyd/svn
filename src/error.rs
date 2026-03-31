@@ -55,6 +55,30 @@ impl ServerError {
             messages.join("; ")
         }
     }
+
+    /// Returns `true` if any server-provided message contains `needle`,
+    /// ignoring ASCII case.
+    pub fn message_contains_case_insensitive(&self, needle: &str) -> bool {
+        self.chain
+            .iter()
+            .filter_map(|item| item.message.as_deref())
+            .any(|message| {
+                message
+                    .to_ascii_lowercase()
+                    .contains(&needle.to_ascii_lowercase())
+            })
+    }
+
+    /// Returns `true` if the server reported a missing revision.
+    pub fn is_missing_revision(&self) -> bool {
+        self.message_contains_case_insensitive("missing revision")
+    }
+
+    /// Returns `true` if the server rejected an unsupported command.
+    pub fn is_unknown_command(&self) -> bool {
+        self.message_contains_case_insensitive("unknown command")
+            || self.message_contains_case_insensitive("unknown cmd")
+    }
 }
 
 impl std::fmt::Display for ServerError {
