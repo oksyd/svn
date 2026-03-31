@@ -1,10 +1,17 @@
-## [0.1.6] - 2026-01-06
+## [0.1.7] - 2026-03-31
+
+### 🚜 Refactor
+
+- Finish src modularization and shared editor cleanup
 
 ### ⚙️ Miscellaneous Tasks
 
 - *(ci)* Update ci.yaml
 - Add examples
 - Add benches
+- Release svn version 0.1.6
+- Add examples
+- *(ci)* Update ci.yaml
 ## [0.1.5] - 2026-01-06
 
 ### 🚀 Features
@@ -13,20 +20,13 @@
 
 ### 🐛 Bug Fixes
 
+- Remove doc_auto_cfg for docs.rs
 - Reconnect and retry ra_svn ops on unexpected EOF
 
 ### ⚙️ Miscellaneous Tasks
 
-- Release svn version 0.1.5
-## [0.1.4] - 2025-12-29
-
-### 🐛 Bug Fixes
-
-- Remove doc_auto_cfg for docs.rs
-
-### ⚙️ Miscellaneous Tasks
-
 - Release svn version 0.1.4
+- Release svn version 0.1.5
 ## [0.1.3] - 2025-12-29
 
 ### 🚀 Features
