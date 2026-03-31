@@ -2,7 +2,7 @@
 name = "svn"
 version = "0.1.6"
 edition = "2024"
-rust-version = "1.92.0"
+rust-version = "1.94.1"
 license = "MIT"
 description = "Async client for Subversion's svn:// (ra_svn) protocol."
 readme = "README.md"
@@ -51,22 +51,22 @@ broken_intra_doc_links = "deny"
 [dependencies]
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"], optional = true }
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
-hmac = { version = "0.12.1", default-features = false, features = ["std"] }
-flate2 = { version = "1.1.5", default-features = false, features = ["rust_backend"] }
+hmac = { version = "0.13.0", default-features = false }
+flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
 libloading = { version = "0.9.0", default-features = false, optional = true }
-lz4_flex = { version = "0.12.0", default-features = false, features = ["std"] }
-md-5 = { version = "0.10.6", default-features = false, features = ["std"] }
-russh = { version = "0.57.0", default-features = false, features = ["ring", "rsa"], optional = true }
+lz4_flex = { version = "0.13.0", default-features = false, features = ["std"] }
+md-5 = { version = "0.11.0", default-features = false }
+russh = { version = "0.58.1", default-features = false, features = ["ring", "rsa"], optional = true }
 serde = { version = "1.0.228", default-features = false, features = ["derive", "std"], optional = true }
-thiserror = { version = "2.0.17", default-features = false, features = ["std"] }
-tokio = { version = "1.49.0", default-features = false, features = ["fs", "io-util", "net", "rt", "sync", "time"] }
+thiserror = { version = "2.0.18", default-features = false, features = ["std"] }
+tokio = { version = "1.50.0", default-features = false, features = ["fs", "io-util", "net", "rt", "sync", "time"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 similar = { version = "2.7.0", default-features = false, features = ["text"] }
 
 [dev-dependencies]
-criterion = "0.8.1"
-proptest = "1.9.0"
-tempfile = "3.24.0"
+criterion = "0.8.2"
+proptest = "1.11.0"
+tempfile = "3.27.0"
 
 [[bench]]
 name = "bench"

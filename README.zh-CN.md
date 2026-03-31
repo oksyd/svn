@@ -21,7 +21,7 @@
     <img src="https://github.com/lvillis/svn-rs/actions/workflows/ci.yaml/badge.svg" alt="CI status">
   </a>
   <a href="rust-toolchain.toml">
-    <img src="https://img.shields.io/badge/MSRV-1.92.0-informational" alt="MSRV 1.92.0">
+    <img src="https://img.shields.io/badge/MSRV-1.94.1-informational" alt="MSRV 1.94.1">
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="license">
@@ -223,7 +223,7 @@ RUST_LOG=svn=debug
 
 - 协议：`ra_svn` v2（`svn://`，以及开启 `ssh` feature 后的 `svn+ssh://`）。
 - IPv6：支持带中括号的 URL（例如 `svn://[::1]/repo`）。
-- MSRV：Rust `1.92.0`（见 `Cargo.toml`）。
+- MSRV：Rust `1.94.1`（见 `Cargo.toml`）。
 - `serde`：通过 `serde` feature 可选开启。
 - Cyrus SASL：通过 `cyrus-sasl` feature 可选开启（运行时依赖 `libsasl2`）。
 - SSH 隧道：通过 `ssh` feature 可选开启（`russh`）。

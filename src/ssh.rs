@@ -1113,12 +1113,12 @@ impl russh::Signer for CloningAgentSigner {
     type Error = russh::AgentAuthError;
 
     #[allow(clippy::manual_async_fn)]
-    fn auth_publickey_sign(
+    fn auth_sign(
         &mut self,
-        key: &russh::keys::PublicKey,
+        key: &russh::keys::agent::AgentIdentity,
         hash_alg: Option<russh::keys::HashAlg>,
-        to_sign: russh::CryptoVec,
-    ) -> impl std::future::Future<Output = Result<russh::CryptoVec, Self::Error>> + Send {
+        to_sign: Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Self::Error>> + Send {
         let agent = &mut self.agent;
         let key = key.clone();
         async move {
@@ -1156,10 +1156,31 @@ async fn try_authenticate_with_agent(
         .flatten();
 
     for key in keys {
-        let result = session
-            .authenticate_publickey_with(username.to_string(), key, hash_alg, &mut signer)
-            .await
-            .map_err(|e| SvnError::Io(std::io::Error::other(format!("ssh-agent error: {e}"))))?;
+        let result = match &key {
+            russh::keys::agent::AgentIdentity::PublicKey {
+                key: public_key, ..
+            } => {
+                session
+                    .authenticate_publickey_with(
+                        username.to_string(),
+                        public_key.clone(),
+                        hash_alg,
+                        &mut signer,
+                    )
+                    .await
+            }
+            russh::keys::agent::AgentIdentity::Certificate { certificate, .. } => {
+                session
+                    .authenticate_certificate_with(
+                        username.to_string(),
+                        certificate.clone(),
+                        hash_alg,
+                        &mut signer,
+                    )
+                    .await
+            }
+        }
+        .map_err(|e| SvnError::Io(std::io::Error::other(format!("ssh-agent error: {e}"))))?;
         if result.success() {
             return Ok(true);
         }

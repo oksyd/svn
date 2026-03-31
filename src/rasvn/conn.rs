@@ -1,4 +1,4 @@
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use md5::Md5;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
