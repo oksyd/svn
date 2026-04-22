@@ -67,7 +67,7 @@ async fn run() -> svn::Result<()> {
 
     let results = session.lock_many(&LockManyOptions::new(), &targets).await?;
     let mut acquired = Vec::new();
-    for (path, result) in paths.iter().zip(results.into_iter()) {
+    for (path, result) in paths.iter().zip(results) {
         match result {
             Ok(lock) => {
                 println!("locked {} token={}", path, lock.token);
@@ -84,7 +84,7 @@ async fn run() -> svn::Result<()> {
     let unlock_results = session
         .unlock_many(&UnlockManyOptions::new(), &unlock_targets)
         .await?;
-    for (target, result) in unlock_targets.iter().zip(unlock_results.into_iter()) {
+    for (target, result) in unlock_targets.iter().zip(unlock_results) {
         match result {
             Ok(path) => println!("unlocked {path}"),
             Err(err) => eprintln!("unlock failed for {}: {err}", target.path),

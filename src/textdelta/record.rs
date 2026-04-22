@@ -126,13 +126,14 @@ impl EditorEventHandler for TextDeltaRecorder {
                 }
                 self.file_paths.remove(&file_token);
             }
-            EditorEvent::CloseEdit | EditorEvent::AbortEdit | EditorEvent::FinishReplay => {
-                if !self.pending.is_empty() {
-                    return Err(SvnError::Protocol(
-                        "editor drive ended with an unfinished textdelta".into(),
-                    ));
-                }
+            EditorEvent::CloseEdit | EditorEvent::AbortEdit | EditorEvent::FinishReplay
+                if !self.pending.is_empty() =>
+            {
+                return Err(SvnError::Protocol(
+                    "editor drive ended with an unfinished textdelta".into(),
+                ));
             }
+            EditorEvent::CloseEdit | EditorEvent::AbortEdit | EditorEvent::FinishReplay => {}
             _ => {}
         }
 
