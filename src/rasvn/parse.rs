@@ -162,7 +162,10 @@ pub(crate) fn parse_location_segment(item: SvnItem) -> Result<LocationSegment, S
     let range_end = items[1]
         .as_u64()
         .ok_or_else(|| SvnError::Protocol("location segment end not a number".into()))?;
-    let path = items.get(2).and_then(opt_tuple_string);
+    let path = items
+        .get(2)
+        .and_then(opt_tuple_string)
+        .map(|path| path.trim_start_matches('/').to_string());
     Ok(LocationSegment {
         range_start,
         range_end,

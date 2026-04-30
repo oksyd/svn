@@ -451,6 +451,35 @@ fn fs_editor_copies_dir_from_copyfrom() {
 }
 
 #[test]
+fn fs_editor_rejects_copyfrom_dir_over_existing_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().to_path_buf();
+
+    std::fs::create_dir_all(root.join("srcdir/sub")).unwrap();
+    std::fs::write(root.join("srcdir/sub/file.txt"), b"hello").unwrap();
+    std::fs::create_dir_all(root.join("destdir")).unwrap();
+    std::fs::write(root.join("destdir/sub"), b"conflict").unwrap();
+
+    let mut editor = FsEditor::new(root);
+    editor
+        .on_event(EditorEvent::OpenRoot {
+            rev: None,
+            token: "d0".to_string(),
+        })
+        .unwrap();
+
+    let err = editor
+        .on_event(EditorEvent::AddDir {
+            path: "destdir".to_string(),
+            parent_token: "d0".to_string(),
+            child_token: "d1".to_string(),
+            copy_from: Some(("srcdir".to_string(), 1)),
+        })
+        .unwrap_err();
+    assert!(matches!(err, SvnError::InvalidPath(_)));
+}
+
+#[test]
 fn fs_editor_dir_copyfrom_provides_base_for_identity_textdelta() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().to_path_buf();
@@ -588,6 +617,39 @@ fn tokio_fs_editor_copies_dir_from_copyfrom() {
             .await
             .unwrap();
         assert_eq!(written, b"hello");
+    });
+}
+
+#[test]
+fn tokio_fs_editor_rejects_copyfrom_dir_over_existing_file() {
+    run_async(async {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+
+        std::fs::create_dir_all(root.join("srcdir/sub")).unwrap();
+        std::fs::write(root.join("srcdir/sub/file.txt"), b"hello").unwrap();
+        std::fs::create_dir_all(root.join("destdir")).unwrap();
+        std::fs::write(root.join("destdir/sub"), b"conflict").unwrap();
+
+        let mut editor = TokioFsEditor::new(root);
+        editor
+            .on_event(EditorEvent::OpenRoot {
+                rev: None,
+                token: "d0".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let err = editor
+            .on_event(EditorEvent::AddDir {
+                path: "destdir".to_string(),
+                parent_token: "d0".to_string(),
+                child_token: "d1".to_string(),
+                copy_from: Some(("srcdir".to_string(), 1)),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SvnError::InvalidPath(_)));
     });
 }
 

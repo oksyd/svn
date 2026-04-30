@@ -491,11 +491,21 @@ pub(super) fn copy_dir_missing_recursive(src: &Path, dest: &Path) -> Result<(), 
             }
 
             if dest_path.exists() {
-                if file_type.is_dir()
-                    && let Ok(dest_meta) = std::fs::metadata(&dest_path)
-                    && dest_meta.is_dir()
-                {
+                if file_type.is_dir() {
+                    let dest_meta = std::fs::metadata(&dest_path)?;
+                    if !dest_meta.is_dir() {
+                        return Err(SvnError::InvalidPath(
+                            "refusing to merge a copied directory over a non-directory".into(),
+                        ));
+                    }
                     stack.push((src_path, dest_path));
+                } else {
+                    let dest_meta = std::fs::metadata(&dest_path)?;
+                    if !dest_meta.is_file() {
+                        return Err(SvnError::InvalidPath(
+                            "refusing to merge a copied file over a non-file".into(),
+                        ));
+                    }
                 }
                 continue;
             }
@@ -559,12 +569,21 @@ pub(super) async fn copy_dir_missing_recursive_async(
             }
 
             if tokio::fs::metadata(&dest_path).await.is_ok() {
-                if file_type.is_dir()
-                    && tokio::fs::metadata(&dest_path)
-                        .await
-                        .is_ok_and(|m| m.is_dir())
-                {
+                if file_type.is_dir() {
+                    let dest_meta = tokio::fs::metadata(&dest_path).await?;
+                    if !dest_meta.is_dir() {
+                        return Err(SvnError::InvalidPath(
+                            "refusing to merge a copied directory over a non-directory".into(),
+                        ));
+                    }
                     stack.push((src_path, dest_path));
+                } else {
+                    let dest_meta = tokio::fs::metadata(&dest_path).await?;
+                    if !dest_meta.is_file() {
+                        return Err(SvnError::InvalidPath(
+                            "refusing to merge a copied file over a non-file".into(),
+                        ));
+                    }
                 }
                 continue;
             }

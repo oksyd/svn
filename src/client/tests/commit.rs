@@ -332,6 +332,30 @@ fn commit_stream_builder_sends_svndiff_fulltext_from_reader() {
 }
 
 #[test]
+fn commit_stream_builder_rejects_duplicate_paths_before_io() {
+    run_async(async {
+        let client = RaSvnClient::new(SvnUrl::parse("svn://example.com/repo").unwrap(), None, None);
+        let mut session = RaSvnSession {
+            client,
+            conn: None,
+            server_info: None,
+            allow_reconnect: false,
+        };
+
+        let builder = crate::CommitStreamBuilder::new()
+            .with_base_rev(1)
+            .put_file_reader("trunk/hello.txt", std::io::Cursor::new(b"one".to_vec()))
+            .put_file_reader("./trunk/hello.txt", std::io::Cursor::new(b"two".to_vec()));
+        let err = builder
+            .commit(&mut session, &CommitOptions::new("msg"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SvnError::Protocol(message) if message.contains("multiple readers")));
+    });
+}
+
+#[test]
 fn commit_sends_editor_commands_and_parses_commit_info() {
     run_async(async {
         let (mut session, mut server) = connected_session().await;

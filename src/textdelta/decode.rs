@@ -331,6 +331,11 @@ fn decode_zlib_section(wire: &[u8], limit: usize) -> Result<Vec<u8>, SvnError> {
     decoder
         .read_to_end(&mut out)
         .map_err(|err| SvnError::Protocol(format!("svndiff zlib decode failed: {err}")))?;
+    if decoder.total_in() as usize != data.len() {
+        return Err(SvnError::Protocol(
+            "svndiff zlib section has trailing data".into(),
+        ));
+    }
     if out.len() != orig_len {
         return Err(SvnError::Protocol(
             "svndiff zlib decoded length mismatch".into(),

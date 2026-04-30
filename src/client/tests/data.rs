@@ -195,7 +195,7 @@ fn get_location_segments_reads_entries_until_done() {
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].range_start, 1);
         assert_eq!(segments[0].range_end, 2);
-        assert_eq!(segments[0].path.as_deref(), Some("/trunk/file.txt"));
+        assert_eq!(segments[0].path.as_deref(), Some("trunk/file.txt"));
 
         server_task.await.unwrap();
     });

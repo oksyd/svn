@@ -3,6 +3,8 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use std::io::Write as _;
+
 use proptest::prelude::*;
 use tokio::io::AsyncWrite;
 
@@ -50,6 +52,46 @@ fn svndiff0_window(
     out.push(new_data.len() as u8);
     out.extend_from_slice(instructions);
     out.extend_from_slice(new_data);
+    out
+}
+
+fn encode_uint_for_test(val: u64, out: &mut Vec<u8>) {
+    let mut v = val >> 7;
+    let mut n = 1u32;
+    while v > 0 {
+        v >>= 7;
+        n += 1;
+    }
+
+    while n > 1 {
+        n -= 1;
+        out.push((((val >> (n * 7)) | 0x80) & 0xff) as u8);
+    }
+    out.push((val & 0x7f) as u8);
+}
+
+fn svndiff1_window(tview_len: u64, instructions_wire: &[u8], newdata_wire: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"SVN\x01");
+    encode_uint_for_test(0, &mut out);
+    encode_uint_for_test(0, &mut out);
+    encode_uint_for_test(tview_len, &mut out);
+    encode_uint_for_test(instructions_wire.len() as u64, &mut out);
+    encode_uint_for_test(newdata_wire.len() as u64, &mut out);
+    out.extend_from_slice(instructions_wire);
+    out.extend_from_slice(newdata_wire);
+    out
+}
+
+fn zlib_section_with_trailing_data(data: &[u8]) -> Vec<u8> {
+    let mut compressed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+    compressed.write_all(data).unwrap();
+    let compressed = compressed.finish().unwrap();
+
+    let mut out = Vec::new();
+    encode_uint_for_test(data.len() as u64, &mut out);
+    out.extend_from_slice(&compressed);
+    out.extend_from_slice(b"trailing");
     out
 }
 
@@ -203,6 +245,19 @@ fn apply_svndiff1_fulltext_roundtrips() {
             .unwrap();
         assert_eq!(out.buf, contents);
     });
+}
+
+#[test]
+fn apply_svndiff1_rejects_trailing_zlib_section_data() {
+    let mut instructions_wire = Vec::new();
+    encode_uint_for_test(1, &mut instructions_wire);
+    instructions_wire.push(0x80 | 3);
+    let newdata_wire = zlib_section_with_trailing_data(b"abc");
+    let delta = svndiff1_window(3, &instructions_wire, &newdata_wire);
+
+    let mut out = Vec::new();
+    let err = apply_textdelta_sync(&[], [&delta], &mut out).unwrap_err();
+    assert!(matches!(err, SvnError::Protocol(message) if message.contains("trailing data")));
 }
 
 #[test]

@@ -120,10 +120,25 @@ impl CommitStreamBuilder {
             }
         };
 
-        let mut files = Vec::<StreamResolvedFile>::new();
-        let mut required_dirs = BTreeSet::<String>::new();
+        let mut seen_paths = BTreeSet::<String>::new();
+        let mut input_files = Vec::<StreamFileChange>::new();
         for file in self.files.drain(..) {
             let path = validate_rel_path(&file.path)?;
+            if !seen_paths.insert(path.clone()) {
+                return Err(SvnError::Protocol(format!(
+                    "commit stream builder has multiple readers for the same file at {path}"
+                )));
+            }
+            input_files.push(StreamFileChange {
+                path,
+                reader: file.reader,
+            });
+        }
+
+        let mut files = Vec::<StreamResolvedFile>::new();
+        let mut required_dirs = BTreeSet::<String>::new();
+        for file in input_files {
+            let path = file.path;
             let parent = parent_dir(&path);
             for dir in dir_prefixes(&parent) {
                 required_dirs.insert(dir);
