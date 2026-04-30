@@ -8,6 +8,7 @@
 ### ⚙️ Miscellaneous Tasks
 
 - Update justfile
+- Release svn version 0.1.9
 ## [0.1.8] - 2026-04-22
 
 ### ⚙️ Miscellaneous Tasks
