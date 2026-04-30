@@ -16,8 +16,11 @@ pub(crate) async fn drive_editor(
     for_replay: bool,
 ) -> Result<EditorDriveStatus, SvnError> {
     loop {
-        let (cmd, params_item) = read_command_item(conn).await?;
-        let params = params_item.as_list().unwrap_or_default();
+        let item = conn.read_item().await?;
+        let (cmd, params) = match parse_command_item(item) {
+            Ok(command) => command,
+            Err(err) => return handle_editor_consumer_error(conn, err, true).await,
+        };
         if cmd == "failure" {
             return Err(parse_failure(&params));
         }
@@ -75,8 +78,11 @@ pub(crate) async fn drive_editor_async(
     for_replay: bool,
 ) -> Result<EditorDriveStatus, SvnError> {
     loop {
-        let (cmd, params_item) = read_command_item(conn).await?;
-        let params = params_item.as_list().unwrap_or_default();
+        let item = conn.read_item().await?;
+        let (cmd, params) = match parse_command_item(item) {
+            Ok(command) => command,
+            Err(err) => return handle_editor_consumer_error(conn, err, true).await,
+        };
         if cmd == "failure" {
             return Err(parse_failure(&params));
         }
@@ -159,20 +165,20 @@ async fn drain_until_abort_or_success(conn: &mut RaSvnConnection) -> Result<(), 
     }
 }
 
-async fn read_command_item(conn: &mut RaSvnConnection) -> Result<(String, SvnItem), SvnError> {
-    let item = conn.read_item().await?;
+fn parse_command_item(item: SvnItem) -> Result<(String, Vec<SvnItem>), SvnError> {
     let SvnItem::List(parts) = item else {
         return Err(SvnError::Protocol("expected command list".into()));
     };
-    if parts.is_empty() {
-        return Err(SvnError::Protocol("empty command list".into()));
+    if parts.len() != 2 {
+        return Err(SvnError::Protocol(
+            "editor command must contain name and parameter list".into(),
+        ));
     }
     let cmd = parts[0]
         .as_word()
         .ok_or_else(|| SvnError::Protocol("command name not a word".into()))?;
-    let params = parts
-        .get(1)
-        .cloned()
-        .unwrap_or_else(|| SvnItem::List(Vec::new()));
+    let params = parts[1]
+        .as_list()
+        .ok_or_else(|| SvnError::Protocol("editor command params not a list".into()))?;
     Ok((cmd, params))
 }

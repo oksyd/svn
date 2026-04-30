@@ -86,3 +86,19 @@ fn openssh_config_strict_host_key_checking_accept_new_enables_learning() {
         resolve_ssh_settings(&url, &ssh, Duration::from_secs(30), Some(&params)).unwrap();
     assert!(settings.accept_new_host_keys);
 }
+
+#[test]
+fn ssh_config_debug_redacts_secrets() {
+    let password_cfg = SshConfig::new(SshAuth::Password("secret-password".to_string()));
+    let debug = format!("{password_cfg:?}");
+    assert!(!debug.contains("secret-password"));
+    assert!(debug.contains("<redacted>"));
+
+    let key_cfg = SshConfig::new(SshAuth::KeyFile {
+        path: "~/.ssh/id_ed25519".into(),
+        passphrase: Some("secret-passphrase".to_string()),
+    });
+    let debug = format!("{key_cfg:?}");
+    assert!(!debug.contains("secret-passphrase"));
+    assert!(debug.contains("<redacted>"));
+}

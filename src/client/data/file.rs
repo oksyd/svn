@@ -133,7 +133,9 @@ impl RaSvnSession {
                         break;
                     }
 
-                    written = written.saturating_add(chunk.len() as u64);
+                    written = written.checked_add(chunk.len() as u64).ok_or_else(|| {
+                        SvnError::Protocol("downloaded file size overflow".into())
+                    })?;
                     if written > max_bytes {
                         return Err(SvnError::Protocol(format!(
                             "downloaded file exceeds limit {max_bytes}"

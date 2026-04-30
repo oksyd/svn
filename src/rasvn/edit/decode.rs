@@ -72,7 +72,7 @@ pub(super) fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<Editor
             Ok(EditorEvent::ChangeDirProp {
                 dir_token: req_string(&params[0], "change-dir-prop token")?,
                 name: req_string(&params[1], "change-dir-prop name")?,
-                value: params.get(2).and_then(opt_tuple_bytes),
+                value: optional_tuple_bytes(params.get(2), "change-dir-prop value")?,
             })
         }
         "close-dir" => {
@@ -126,7 +126,10 @@ pub(super) fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<Editor
             }
             Ok(EditorEvent::ApplyTextDelta {
                 file_token: req_string(&params[0], "apply-textdelta token")?,
-                base_checksum: params.get(1).and_then(opt_tuple_string),
+                base_checksum: optional_tuple_string(
+                    params.get(1),
+                    "apply-textdelta base checksum",
+                )?,
             })
         }
         "textdelta-chunk" => {
@@ -156,7 +159,7 @@ pub(super) fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<Editor
             Ok(EditorEvent::ChangeFileProp {
                 file_token: req_string(&params[0], "change-file-prop token")?,
                 name: req_string(&params[1], "change-file-prop name")?,
-                value: params.get(2).and_then(opt_tuple_bytes),
+                value: optional_tuple_bytes(params.get(2), "change-file-prop value")?,
             })
         }
         "close-file" => {
@@ -165,7 +168,7 @@ pub(super) fn parse_editor_event(cmd: &str, params: &[SvnItem]) -> Result<Editor
             }
             Ok(EditorEvent::CloseFile {
                 file_token: req_string(&params[0], "close-file token")?,
-                text_checksum: params.get(1).and_then(opt_tuple_string),
+                text_checksum: optional_tuple_string(params.get(1), "close-file checksum")?,
             })
         }
         "absent-file" => {
@@ -207,29 +210,17 @@ fn opt_tuple_u64(item: &SvnItem) -> Option<u64> {
     }
 }
 
-fn opt_tuple_string(item: &SvnItem) -> Option<String> {
-    match item {
-        SvnItem::List(items) => items.first().and_then(|item| item.as_string()),
-        _ => item.as_string(),
-    }
-}
-
-fn opt_tuple_bytes(item: &SvnItem) -> Option<Vec<u8>> {
-    match item {
-        SvnItem::List(items) => items.first().and_then(|item| item.as_bytes_string()),
-        _ => item.as_bytes_string(),
-    }
-}
-
 fn opt_tuple_copyfrom(item: &SvnItem) -> Result<Option<(String, u64)>, SvnError> {
-    let Some(items) = item.as_list() else {
-        return Ok(None);
-    };
+    let items = item
+        .as_list()
+        .ok_or_else(|| SvnError::Protocol("copy-from not a tuple".into()))?;
     if items.is_empty() {
         return Ok(None);
     }
-    if items.len() < 2 {
-        return Err(SvnError::Protocol("copy-from tuple too short".into()));
+    if items.len() != 2 {
+        return Err(SvnError::Protocol(
+            "copy-from tuple must contain path and rev".into(),
+        ));
     }
     let path = items[0]
         .as_string()
@@ -239,4 +230,40 @@ fn opt_tuple_copyfrom(item: &SvnItem) -> Result<Option<(String, u64)>, SvnError>
         .ok_or_else(|| SvnError::Protocol("copy-from rev not a number".into()))?;
     let path = validate_rel_path(&path)?;
     Ok(Some((path, rev)))
+}
+
+fn optional_tuple_string(item: Option<&SvnItem>, ctx: &str) -> Result<Option<String>, SvnError> {
+    let Some(item) = item else {
+        return Ok(None);
+    };
+    match item {
+        SvnItem::List(items) if items.is_empty() => Ok(None),
+        SvnItem::List(items) if items.len() == 1 => items[0]
+            .as_string()
+            .map(Some)
+            .ok_or_else(|| SvnError::Protocol(format!("{ctx} not a string"))),
+        SvnItem::List(_) => Err(SvnError::Protocol(format!("{ctx} tuple too long"))),
+        _ => item
+            .as_string()
+            .map(Some)
+            .ok_or_else(|| SvnError::Protocol(format!("{ctx} not a string"))),
+    }
+}
+
+fn optional_tuple_bytes(item: Option<&SvnItem>, ctx: &str) -> Result<Option<Vec<u8>>, SvnError> {
+    let Some(item) = item else {
+        return Ok(None);
+    };
+    match item {
+        SvnItem::List(items) if items.is_empty() => Ok(None),
+        SvnItem::List(items) if items.len() == 1 => items[0]
+            .as_bytes_string()
+            .map(Some)
+            .ok_or_else(|| SvnError::Protocol(format!("{ctx} not a string"))),
+        SvnItem::List(_) => Err(SvnError::Protocol(format!("{ctx} tuple too long"))),
+        _ => item
+            .as_bytes_string()
+            .map(Some)
+            .ok_or_else(|| SvnError::Protocol(format!("{ctx} not a string"))),
+    }
 }

@@ -200,6 +200,65 @@ fn rev_proplist_and_rev_prop_round_trip() {
 }
 
 #[test]
+fn rev_prop_distinguishes_empty_and_malformed_value_tuple() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let expected_rev_prop = SvnItem::List(vec![
+            SvnItem::Word("rev-prop".to_string()),
+            SvnItem::List(vec![
+                SvnItem::Number(5),
+                SvnItem::String(b"svn:log".to_vec()),
+            ]),
+        ]);
+
+        let server_task = tokio::spawn(async move {
+            let responses = [
+                SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(vec![SvnItem::List(Vec::new())]),
+                ]),
+                SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(Vec::new()),
+                ]),
+                SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(vec![SvnItem::List(vec![
+                        SvnItem::String(b"hello".to_vec()),
+                        SvnItem::String(b"extra".to_vec()),
+                    ])]),
+                ]),
+            ];
+
+            for (idx, response) in responses.into_iter().enumerate() {
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_line(&expected_rev_prop)
+                );
+                write_item_line(&mut server, &auth_request(&format!("realm-{idx}"))).await;
+                write_item_line(&mut server, &response).await;
+            }
+        });
+
+        let value = session.rev_prop(5, "svn:log").await.unwrap();
+        assert_eq!(value, None);
+
+        let err = session.rev_prop(5, "svn:log").await.unwrap_err();
+        assert!(
+            matches!(err, SvnError::Protocol(msg) if msg == "rev-prop response must contain exactly one value tuple")
+        );
+
+        let err = session.rev_prop(5, "svn:log").await.unwrap_err();
+        assert!(
+            matches!(err, SvnError::Protocol(msg) if msg == "rev-prop value tuple must contain at most one value")
+        );
+
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
 fn check_path_sends_command_and_parses_kind() {
     run_async(async {
         let (mut session, mut server) = connected_session().await;
@@ -264,6 +323,25 @@ fn reparent_sends_command_and_updates_base_url() {
         assert_eq!(session.client.base_url, new_url);
 
         server_task.await.unwrap();
+    });
+}
+
+#[test]
+fn reparent_rejects_transport_identity_changes() {
+    run_async(async {
+        let (mut session, _server) = connected_session().await;
+
+        let scheme_err = session
+            .reparent(SvnUrl::parse("svn+ssh://example.com:3690/repo/branch").unwrap())
+            .await
+            .unwrap_err();
+        assert!(matches!(scheme_err, SvnError::InvalidUrl(_)));
+
+        let user_err = session
+            .reparent(SvnUrl::parse("svn://alice@example.com/repo/branch").unwrap())
+            .await
+            .unwrap_err();
+        assert!(matches!(user_err, SvnError::InvalidUrl(_)));
     });
 }
 

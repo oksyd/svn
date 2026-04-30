@@ -1,25 +1,31 @@
 use super::*;
 
-/// A key used by [`SessionPools`] to partition pools by `host:port` and an
-/// optional custom key.
+/// A key used by [`SessionPools`] to partition pools by transport identity and
+/// an optional custom key.
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct SessionPoolKey {
+    scheme: String,
     host: String,
     port: u16,
+    url_username: Option<String>,
     username: Option<String>,
     password: Option<String>,
     connect_timeout: Duration,
     read_timeout: Duration,
     write_timeout: Duration,
     ra_client: String,
+    #[cfg(feature = "ssh")]
+    ssh: Option<crate::ssh::SshConfig>,
     custom: Option<String>,
 }
 
 impl std::fmt::Debug for SessionPoolKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut out = f.debug_struct("SessionPoolKey");
-        out.field("host", &self.host)
+        out.field("scheme", &self.scheme)
+            .field("host", &self.host)
             .field("port", &self.port)
+            .field("url_username", &self.url_username)
             .field("username", &self.username);
         if self.password.is_some() {
             out.field("password", &"<redacted>");
@@ -29,9 +35,10 @@ impl std::fmt::Debug for SessionPoolKey {
         out.field("connect_timeout", &self.connect_timeout)
             .field("read_timeout", &self.read_timeout)
             .field("write_timeout", &self.write_timeout)
-            .field("ra_client", &self.ra_client)
-            .field("custom", &self.custom)
-            .finish()
+            .field("ra_client", &self.ra_client);
+        #[cfg(feature = "ssh")]
+        out.field("ssh", &self.ssh);
+        out.field("custom", &self.custom).finish()
     }
 }
 
@@ -40,14 +47,18 @@ impl SessionPoolKey {
     pub fn for_client(client: &RaSvnClient) -> Self {
         let url = client.base_url();
         Self {
+            scheme: url.scheme().to_string(),
             host: url.host.clone(),
             port: url.port,
+            url_username: url.username().map(ToString::to_string),
             username: client.username().map(|s| s.to_string()),
             password: client.password().map(|s| s.to_string()),
             connect_timeout: client.connect_timeout(),
             read_timeout: client.read_timeout(),
             write_timeout: client.write_timeout(),
             ra_client: client.ra_client().to_string(),
+            #[cfg(feature = "ssh")]
+            ssh: client.ssh_config().cloned(),
             custom: None,
         }
     }

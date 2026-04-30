@@ -51,11 +51,13 @@ impl RaSvnSession {
     ///
     /// This is only allowed within the same `host:port` pair.
     pub async fn reparent(&mut self, new_base_url: SvnUrl) -> Result<(), SvnError> {
-        if new_base_url.host != self.client.base_url.host
+        if new_base_url.scheme() != self.client.base_url.scheme()
+            || new_base_url.username() != self.client.base_url.username()
+            || new_base_url.host != self.client.base_url.host
             || new_base_url.port != self.client.base_url.port
         {
             return Err(SvnError::InvalidUrl(
-                "reparent requires same host and port".to_string(),
+                "reparent requires same scheme, URL username, host, and port".to_string(),
             ));
         }
 

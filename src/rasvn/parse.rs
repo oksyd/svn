@@ -12,18 +12,18 @@ pub(crate) fn parse_proplist(item: &SvnItem) -> Result<PropertyList, SvnError> {
         .ok_or_else(|| SvnError::Protocol("proplist not a list".into()))?;
     let mut props = PropertyList::new();
     for entry in entries {
-        let Some(items) = entry.as_list() else {
-            continue;
-        };
+        let items = entry
+            .as_list()
+            .ok_or_else(|| SvnError::Protocol("proplist entry not a list".into()))?;
         if items.len() < 2 {
-            continue;
+            return Err(SvnError::Protocol("proplist entry too short".into()));
         }
-        let Some(name) = items[0].as_string() else {
-            continue;
-        };
-        let Some(value) = items[1].as_bytes_string() else {
-            continue;
-        };
+        let name = items[0]
+            .as_string()
+            .ok_or_else(|| SvnError::Protocol("proplist entry name not a string".into()))?;
+        let value = items[1]
+            .as_bytes_string()
+            .ok_or_else(|| SvnError::Protocol("proplist entry value not a string".into()))?;
         props.insert(name, value);
     }
     Ok(props)
@@ -35,15 +35,15 @@ pub(crate) fn parse_iproplist(item: &SvnItem) -> Result<Vec<InheritedProps>, Svn
         .ok_or_else(|| SvnError::Protocol("iproplist not a list".into()))?;
     let mut out = Vec::new();
     for entry in entries {
-        let Some(items) = entry.as_list() else {
-            continue;
-        };
+        let items = entry
+            .as_list()
+            .ok_or_else(|| SvnError::Protocol("iproplist entry not a list".into()))?;
         if items.len() < 2 {
-            continue;
+            return Err(SvnError::Protocol("iproplist entry too short".into()));
         }
-        let Some(path) = items[0].as_string() else {
-            continue;
-        };
+        let path = items[0]
+            .as_string()
+            .ok_or_else(|| SvnError::Protocol("iproplist path not a string".into()))?;
         let props = parse_proplist(&items[1])?;
         out.push(InheritedProps { path, props });
     }
@@ -56,16 +56,19 @@ pub(crate) fn parse_propdelta(item: &SvnItem) -> Result<Vec<PropDelta>, SvnError
         .ok_or_else(|| SvnError::Protocol("propdelta not a list".into()))?;
     let mut out = Vec::new();
     for entry in entries {
-        let Some(items) = entry.as_list() else {
-            continue;
-        };
+        let items = entry
+            .as_list()
+            .ok_or_else(|| SvnError::Protocol("propdelta entry not a list".into()))?;
         if items.is_empty() {
-            continue;
+            return Err(SvnError::Protocol("propdelta entry too short".into()));
         }
-        let Some(name) = items[0].as_string() else {
-            continue;
+        let name = items[0]
+            .as_string()
+            .ok_or_else(|| SvnError::Protocol("propdelta name not a string".into()))?;
+        let value = match items.get(1) {
+            Some(item) => optional_tuple_bytes(item, "propdelta value")?,
+            None => None,
         };
-        let value = items.get(1).and_then(opt_tuple_bytes);
         out.push(PropDelta { name, value });
     }
     Ok(out)
@@ -89,12 +92,12 @@ pub(crate) fn parse_lockdesc(item: &SvnItem) -> Result<LockDesc, SvnError> {
     let owner = items[2]
         .as_string()
         .ok_or_else(|| SvnError::Protocol("lockdesc owner not a string".into()))?;
-    let comment = items.get(3).and_then(opt_tuple_string);
+    let comment = parse_optional_string(items.get(3), "lockdesc comment")?;
     let created = items
         .get(4)
         .and_then(|i| i.as_string())
         .ok_or_else(|| SvnError::Protocol("lockdesc created not a string".into()))?;
-    let expires = items.get(5).and_then(opt_tuple_string);
+    let expires = parse_optional_string(items.get(5), "lockdesc expires")?;
 
     Ok(LockDesc {
         path,
@@ -113,19 +116,33 @@ pub(crate) fn parse_mergeinfo_catalog(params: &[SvnItem]) -> Result<MergeInfoCat
         .ok_or_else(|| SvnError::Protocol("mergeinfo response not a list".into()))?;
     let mut out = MergeInfoCatalog::new();
     for entry in entries {
-        let Some(items) = entry.as_list() else {
-            continue;
-        };
+        let items = entry
+            .as_list()
+            .ok_or_else(|| SvnError::Protocol("mergeinfo entry not a list".into()))?;
         if items.len() < 2 {
-            continue;
+            return Err(SvnError::Protocol("mergeinfo entry too short".into()));
         }
-        let Some(path) = items[0].as_string() else {
-            continue;
-        };
-        let Some(mergeinfo) = items[1].as_string() else {
-            continue;
-        };
+        let path = items[0]
+            .as_string()
+            .ok_or_else(|| SvnError::Protocol("mergeinfo path not a string".into()))?;
+        let mergeinfo = items[1]
+            .as_string()
+            .ok_or_else(|| SvnError::Protocol("mergeinfo value not a string".into()))?;
         out.insert(path.trim_start_matches('/').to_string(), mergeinfo);
+    }
+    Ok(out)
+}
+
+pub(crate) fn parse_word_list(item: &SvnItem, ctx: &str) -> Result<Vec<String>, SvnError> {
+    let items = item
+        .as_list()
+        .ok_or_else(|| SvnError::Protocol(format!("{ctx} not a list")))?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let word = item
+            .as_word()
+            .ok_or_else(|| SvnError::Protocol(format!("{ctx} entry not a word")))?;
+        out.push(word);
     }
     Ok(out)
 }
@@ -162,9 +179,7 @@ pub(crate) fn parse_location_segment(item: SvnItem) -> Result<LocationSegment, S
     let range_end = items[1]
         .as_u64()
         .ok_or_else(|| SvnError::Protocol("location segment end not a number".into()))?;
-    let path = items
-        .get(2)
-        .and_then(opt_tuple_string)
+    let path = parse_optional_string(items.get(2), "location segment path")?
         .map(|path| path.trim_start_matches('/').to_string());
     Ok(LocationSegment {
         range_start,
@@ -190,7 +205,8 @@ pub(crate) fn parse_file_rev_entry(item: SvnItem) -> Result<FileRev, SvnError> {
         .ok_or_else(|| SvnError::Protocol("file-rev rev not a number".into()))?;
     let rev_props = parse_proplist(&items[2])?;
     let prop_deltas = parse_propdelta(&items[3])?;
-    let merged_revision = items.get(4).and_then(opt_tuple_bool).unwrap_or(false);
+    let merged_revision =
+        parse_optional_bool(items.get(4), "file-rev merged-revision")?.unwrap_or(false);
     Ok(FileRev {
         path,
         rev,
@@ -214,13 +230,8 @@ pub(crate) fn parse_repos_info(params: &[SvnItem]) -> Result<RepositoryInfo, Svn
             .ok_or_else(|| SvnError::Protocol("repos-info root url not a string".into()))?,
         None => String::new(),
     };
-    let capabilities: Vec<String> = match params.get(2) {
-        Some(item) => item
-            .as_list()
-            .ok_or_else(|| SvnError::Protocol("repos-info caps not a list".into()))?
-            .into_iter()
-            .filter_map(|c| c.as_word())
-            .collect(),
+    let capabilities = match params.get(2) {
+        Some(item) => parse_word_list(item, "repos-info caps")?,
         None => Vec::new(),
     };
     Ok(RepositoryInfo {
@@ -278,9 +289,9 @@ pub(crate) fn parse_commit_info(item: &SvnItem) -> Result<CommitInfo, SvnError> 
     let new_rev = items[0]
         .as_u64()
         .ok_or_else(|| SvnError::Protocol("commit-info new-rev not a number".into()))?;
-    let date = items.get(1).and_then(opt_tuple_string);
-    let author = items.get(2).and_then(opt_tuple_string);
-    let post_commit_err = items.get(3).and_then(opt_tuple_string);
+    let date = parse_optional_string(items.get(1), "commit-info date")?;
+    let author = parse_optional_string(items.get(2), "commit-info author")?;
+    let post_commit_err = parse_optional_string(items.get(3), "commit-info post-commit error")?;
 
     Ok(CommitInfo {
         new_rev,
@@ -304,10 +315,7 @@ pub(crate) fn parse_get_file_response_params(
         return Err(SvnError::Protocol("get-file response too short".into()));
     }
 
-    let checksum = params[0]
-        .as_list()
-        .and_then(|items| items.first().and_then(|i| i.as_string()))
-        .or_else(|| params[0].as_string());
+    let checksum = parse_optional_string(params.first(), "get-file checksum")?;
     let rev = params[1]
         .as_u64()
         .ok_or_else(|| SvnError::Protocol("get-file rev not a number".into()))?;
@@ -315,12 +323,10 @@ pub(crate) fn parse_get_file_response_params(
     let inherited_props = match params.get(3) {
         None => Vec::new(),
         Some(item) => match item {
-            SvnItem::List(items) => {
-                if items.is_empty() {
-                    Vec::new()
-                } else {
-                    parse_iproplist(&items[0])?
-                }
+            SvnItem::List(items) if items.is_empty() => Vec::new(),
+            SvnItem::List(items) if items.len() == 1 => parse_iproplist(&items[0])?,
+            SvnItem::List(_) => {
+                return Err(SvnError::Protocol("get-file iprops tuple too long".into()));
             }
             _ => return Err(SvnError::Protocol("get-file iprops not a list".into())),
         },
@@ -352,24 +358,25 @@ pub(crate) fn parse_get_dir_listing(
     let mut entries = Vec::new();
     let dir_prefix = dir_path.trim_end_matches('/');
     for entry in entries_list {
-        let Some(items) = entry.as_list() else {
-            continue;
-        };
-        let Some(name) = items.first().and_then(|i| i.as_string()) else {
-            continue;
-        };
+        let items = entry
+            .as_list()
+            .ok_or_else(|| SvnError::Protocol("get-dir entry not a list".into()))?;
+        if items.len() < 2 {
+            return Err(SvnError::Protocol("get-dir entry too short".into()));
+        }
+        let name = items[0]
+            .as_string()
+            .ok_or_else(|| SvnError::Protocol("get-dir entry name not a string".into()))?;
 
-        let kind_word = items
-            .get(1)
-            .and_then(opt_tuple_wordish)
-            .unwrap_or_else(|| "unknown".to_string());
+        let kind_word = parse_optional_wordish(items.get(1), "get-dir entry kind")?
+            .ok_or_else(|| SvnError::Protocol("get-dir entry kind not a word".into()))?;
         let kind = NodeKind::from_word(&kind_word);
 
-        let size = items.get(2).and_then(|i| i.as_u64());
-        let has_props = items.get(3).and_then(|i| i.as_bool());
-        let created_rev = items.get(4).and_then(|i| i.as_u64());
-        let created_date = items.get(5).and_then(opt_tuple_string);
-        let last_author = items.get(6).and_then(opt_tuple_string);
+        let size = parse_optional_u64(items.get(2), "get-dir entry size")?;
+        let has_props = parse_optional_bool(items.get(3), "get-dir entry has-props")?;
+        let created_rev = parse_optional_u64(items.get(4), "get-dir entry created-rev")?;
+        let created_date = parse_optional_string(items.get(5), "get-dir entry created-date")?;
+        let last_author = parse_optional_string(items.get(6), "get-dir entry last-author")?;
 
         let full_path = if dir_prefix.is_empty() {
             name.clone()
@@ -409,13 +416,12 @@ pub(crate) fn parse_log_entry(
         .as_u64()
         .ok_or_else(|| SvnError::Protocol("log entry rev not a number".into()))?;
 
-    let author = items.get(2).and_then(opt_tuple_string);
-    let date = items.get(3).and_then(opt_tuple_string);
-    let message = items.get(4).and_then(opt_tuple_string);
+    let author = parse_optional_string(items.get(2), "log author")?;
+    let date = parse_optional_string(items.get(3), "log date")?;
+    let message = parse_optional_string(items.get(4), "log message")?;
 
     let mut has_children = false;
     let mut invalid_revnum = false;
-    let mut subtractive_merge = false;
     let mut rev_props = PropertyList::new();
 
     let mut idx = 5;
@@ -441,65 +447,36 @@ pub(crate) fn parse_log_entry(
             "server does not support custom revprops via log".into(),
         ));
     }
-    if let Some(b) = items.get(idx).and_then(opt_tuple_bool) {
-        subtractive_merge = b;
-    }
+    let subtractive_merge =
+        parse_optional_bool(items.get(idx), "log subtractive-merge")?.unwrap_or(false);
 
     let mut changed_paths = Vec::new();
     for change in changes {
-        let Some(change_items) = change.as_list() else {
-            continue;
-        };
+        let change_items = change
+            .as_list()
+            .ok_or_else(|| SvnError::Protocol("log changed-path not a list".into()))?;
         if change_items.len() < 2 {
-            continue;
-        }
-        let Some(path) = change_items[0].as_string() else {
-            continue;
+            return Err(SvnError::Protocol("log changed-path too short".into()));
         };
-        let Some(action) = change_items[1].as_word() else {
-            continue;
-        };
+        let path = change_items[0]
+            .as_string()
+            .ok_or_else(|| SvnError::Protocol("log changed-path path not a string".into()))?;
+        let action = change_items[1]
+            .as_word()
+            .ok_or_else(|| SvnError::Protocol("log changed-path action not a word".into()))?;
 
-        let (copy_from_path, copy_from_rev) = change_items
-            .get(2)
-            .and_then(|i| i.as_list())
-            .and_then(|items| {
-                if items.len() < 2 {
-                    return None;
-                }
-                let path = items[0]
-                    .as_string()
-                    .map(|p| p.trim_start_matches('/').to_string());
-                let rev = items[1].as_u64();
-                match (path, rev) {
-                    (Some(path), Some(rev)) => Some((Some(path), Some(rev))),
-                    _ => Some((None, None)),
-                }
-            })
-            .unwrap_or((None, None));
+        let (copy_from_path, copy_from_rev) = parse_log_copyfrom(change_items.get(2))?;
 
-        let (node_kind, text_mods, prop_mods) = change_items
-            .get(3)
-            .and_then(|i| i.as_list())
-            .map(|items| {
-                let kind = items
-                    .first()
-                    .and_then(|i| i.as_string().or_else(|| i.as_word()))
-                    .map(|word| NodeKind::from_word(&word));
-                let text_mods = items.get(1).and_then(|i| i.as_bool());
-                let prop_mods = items.get(2).and_then(|i| i.as_bool());
-                (kind, text_mods, prop_mods)
-            })
-            .unwrap_or((None, None, None));
+        let node_flags = parse_log_node_flags(change_items.get(3))?;
 
         changed_paths.push(ChangedPath {
             action,
             path: path.trim_start_matches('/').to_string(),
             copy_from_path,
             copy_from_rev,
-            node_kind,
-            text_mods,
-            prop_mods,
+            node_kind: node_flags.kind,
+            text_mods: node_flags.text_mods,
+            prop_mods: node_flags.prop_mods,
         });
     }
     Ok(LogEntry {
@@ -523,14 +500,15 @@ pub(crate) fn parse_list_dirent(items: Vec<SvnItem>) -> Result<DirEntry, SvnErro
     let rel_path = items[0]
         .as_string()
         .ok_or_else(|| SvnError::Protocol("list dirent path missing".into()))?;
-    let kind_word = opt_tuple_wordish(&items[1]).unwrap_or_else(|| "unknown".to_string());
+    let kind_word = parse_optional_wordish(items.get(1), "list dirent kind")?
+        .ok_or_else(|| SvnError::Protocol("list dirent kind not a word".into()))?;
     let kind = NodeKind::from_word(&kind_word);
 
-    let size = items.get(2).and_then(opt_tuple_u64);
-    let has_props = items.get(3).and_then(opt_tuple_bool);
-    let created_rev = items.get(4).and_then(opt_tuple_u64);
-    let created_date = items.get(5).and_then(opt_tuple_string);
-    let last_author = items.get(6).and_then(opt_tuple_string);
+    let size = parse_optional_u64(items.get(2), "list dirent size")?;
+    let has_props = parse_optional_bool(items.get(3), "list dirent has-props")?;
+    let created_rev = parse_optional_u64(items.get(4), "list dirent created-rev")?;
+    let created_date = parse_optional_string(items.get(5), "list dirent created-date")?;
+    let last_author = parse_optional_string(items.get(6), "list dirent last-author")?;
 
     let rel_path = rel_path.trim_start_matches('/').to_string();
     let name = rel_path
@@ -550,86 +528,212 @@ pub(crate) fn parse_list_dirent(items: Vec<SvnItem>) -> Result<DirEntry, SvnErro
     })
 }
 
-pub(crate) fn parse_stat_params(params: &[SvnItem]) -> Option<StatEntry> {
+pub(crate) fn parse_stat_params(params: &[SvnItem]) -> Result<Option<StatEntry>, SvnError> {
     if params.is_empty() {
-        return None;
-    }
-
-    if let Some(entry) = parse_stat_entry(params) {
-        return Some(entry);
+        return Ok(None);
     }
 
     if params.len() == 1
         && let Some(items) = params[0].as_list()
-        && let Some(entry) = parse_stat_entry(&items)
+        && let Some(entry) = parse_stat_entry(&items)?
     {
-        return Some(entry);
+        return Ok(Some(entry));
     }
 
     if params.len() >= 2
         && opt_tuple_u64(&params[0]).is_some()
         && let Some(items) = params[1].as_list()
-        && let Some(entry) = parse_stat_entry(&items)
+        && let Some(entry) = parse_stat_entry(&items)?
     {
-        return Some(entry);
+        return Ok(Some(entry));
+    }
+
+    if let Some(entry) = parse_stat_entry(params)? {
+        return Ok(Some(entry));
     }
 
     for item in params {
         if let Some(items) = item.as_list()
-            && let Some(entry) = parse_stat_entry(&items)
+            && let Some(entry) = parse_stat_entry(&items)?
         {
-            return Some(entry);
+            return Ok(Some(entry));
         }
     }
 
-    None
+    Ok(None)
 }
 
-fn parse_stat_entry(items: &[SvnItem]) -> Option<StatEntry> {
-    if let Some(entry) = parse_stat_entry_at(items, 0) {
-        return Some(entry);
+fn parse_stat_entry(items: &[SvnItem]) -> Result<Option<StatEntry>, SvnError> {
+    if items.len() >= 2
+        && opt_tuple_u64(&items[0]).is_some()
+        && let Some(entry) = parse_stat_entry_at(items, 1)?
+    {
+        return Ok(Some(entry));
     }
-    if items.len() >= 2 && opt_tuple_u64(&items[0]).is_some() {
-        return parse_stat_entry_at(items, 1);
+    if let Some(entry) = parse_stat_entry_at(items, 0)? {
+        return Ok(Some(entry));
     }
-    None
+    Ok(None)
 }
 
-fn parse_stat_entry_at(items: &[SvnItem], offset: usize) -> Option<StatEntry> {
-    let kind_word = items.get(offset).and_then(opt_tuple_wordish)?;
+fn parse_stat_entry_at(items: &[SvnItem], offset: usize) -> Result<Option<StatEntry>, SvnError> {
+    let Some(kind_word) = items.get(offset).and_then(opt_tuple_wordish) else {
+        return Ok(None);
+    };
     let kind = NodeKind::from_word(&kind_word);
     if matches!(kind, NodeKind::Unknown | NodeKind::None) {
-        return None;
+        return Ok(None);
     }
 
-    let size = items.get(offset + 1).and_then(opt_tuple_u64);
-    let has_props = items.get(offset + 2).and_then(opt_tuple_bool);
-    let created_rev = items.get(offset + 3).and_then(opt_tuple_u64);
-    let created_date = items.get(offset + 4).and_then(opt_tuple_string);
-    let last_author = items.get(offset + 5).and_then(opt_tuple_string);
+    let size = parse_optional_u64(items.get(offset + 1), "stat size")?;
+    let has_props = parse_optional_bool(items.get(offset + 2), "stat has-props")?;
+    let created_rev = parse_optional_u64(items.get(offset + 3), "stat created-rev")?;
+    let created_date = parse_optional_string(items.get(offset + 4), "stat created-date")?;
+    let last_author = parse_optional_string(items.get(offset + 5), "stat last-author")?;
 
-    Some(StatEntry {
+    Ok(Some(StatEntry {
         kind,
         size,
         has_props,
         created_rev,
         created_date,
         last_author,
+    }))
+}
+
+fn parse_optional_string(item: Option<&SvnItem>, ctx: &str) -> Result<Option<String>, SvnError> {
+    parse_optional_scalar(item, ctx, "a string", SvnItem::as_string)
+}
+
+fn parse_optional_u64(item: Option<&SvnItem>, ctx: &str) -> Result<Option<u64>, SvnError> {
+    parse_optional_scalar(item, ctx, "a number", SvnItem::as_u64)
+}
+
+fn parse_optional_bool(item: Option<&SvnItem>, ctx: &str) -> Result<Option<bool>, SvnError> {
+    parse_optional_scalar(item, ctx, "a bool", SvnItem::as_bool)
+}
+
+fn parse_optional_wordish(item: Option<&SvnItem>, ctx: &str) -> Result<Option<String>, SvnError> {
+    parse_optional_scalar(item, ctx, "a word", opt_tuple_wordish)
+}
+
+fn parse_optional_scalar<T>(
+    item: Option<&SvnItem>,
+    ctx: &str,
+    expected: &str,
+    parse: impl Fn(&SvnItem) -> Option<T>,
+) -> Result<Option<T>, SvnError> {
+    let Some(item) = item else {
+        return Ok(None);
+    };
+    match item {
+        SvnItem::List(items) if items.is_empty() => Ok(None),
+        SvnItem::List(items) if items.len() == 1 => parse(&items[0])
+            .map(Some)
+            .ok_or_else(|| SvnError::Protocol(format!("{ctx} not {expected}"))),
+        SvnItem::List(_) => Err(SvnError::Protocol(format!("{ctx} tuple too long"))),
+        _ => parse(item)
+            .map(Some)
+            .ok_or_else(|| SvnError::Protocol(format!("{ctx} not {expected}"))),
+    }
+}
+
+fn optional_tuple_bytes(item: &SvnItem, ctx: &str) -> Result<Option<Vec<u8>>, SvnError> {
+    match item {
+        SvnItem::List(items) if items.is_empty() => Ok(None),
+        SvnItem::List(items) if items.len() == 1 => items[0]
+            .as_bytes_string()
+            .map(Some)
+            .ok_or_else(|| SvnError::Protocol(format!("{ctx} not a string"))),
+        SvnItem::List(_) => Err(SvnError::Protocol(format!("{ctx} tuple too long"))),
+        _ => item
+            .as_bytes_string()
+            .map(Some)
+            .ok_or_else(|| SvnError::Protocol(format!("{ctx} not a string"))),
+    }
+}
+
+fn parse_log_copyfrom(item: Option<&SvnItem>) -> Result<(Option<String>, Option<u64>), SvnError> {
+    let Some(item) = item else {
+        return Ok((None, None));
+    };
+    let items = item
+        .as_list()
+        .ok_or_else(|| SvnError::Protocol("log copy-from not a tuple".into()))?;
+    if items.is_empty() {
+        return Ok((None, None));
+    }
+    if items.len() != 2 {
+        return Err(SvnError::Protocol(
+            "log copy-from tuple must contain path and rev".into(),
+        ));
+    }
+    let path = items[0]
+        .as_string()
+        .ok_or_else(|| SvnError::Protocol("log copy-from path not a string".into()))?
+        .trim_start_matches('/')
+        .to_string();
+    let rev = items[1]
+        .as_u64()
+        .ok_or_else(|| SvnError::Protocol("log copy-from rev not a number".into()))?;
+    Ok((Some(path), Some(rev)))
+}
+
+struct LogNodeFlags {
+    kind: Option<NodeKind>,
+    text_mods: Option<bool>,
+    prop_mods: Option<bool>,
+}
+
+impl LogNodeFlags {
+    fn empty() -> Self {
+        Self {
+            kind: None,
+            text_mods: None,
+            prop_mods: None,
+        }
+    }
+}
+
+fn parse_log_node_flags(item: Option<&SvnItem>) -> Result<LogNodeFlags, SvnError> {
+    let Some(item) = item else {
+        return Ok(LogNodeFlags::empty());
+    };
+    let items = item
+        .as_list()
+        .ok_or_else(|| SvnError::Protocol("log node flags not a tuple".into()))?;
+    if items.is_empty() {
+        return Ok(LogNodeFlags::empty());
+    }
+
+    let kind = items
+        .first()
+        .map(|item| {
+            item.as_string()
+                .or_else(|| item.as_word())
+                .map(|word| NodeKind::from_word(&word))
+                .ok_or_else(|| SvnError::Protocol("log node kind not a word".into()))
+        })
+        .transpose()?;
+    let text_mods = match items.get(1) {
+        Some(item) => Some(
+            item.as_bool()
+                .ok_or_else(|| SvnError::Protocol("log text-mods not a bool".into()))?,
+        ),
+        None => None,
+    };
+    let prop_mods = match items.get(2) {
+        Some(item) => Some(
+            item.as_bool()
+                .ok_or_else(|| SvnError::Protocol("log prop-mods not a bool".into()))?,
+        ),
+        None => None,
+    };
+    Ok(LogNodeFlags {
+        kind,
+        text_mods,
+        prop_mods,
     })
-}
-
-fn opt_tuple_string(item: &SvnItem) -> Option<String> {
-    match item {
-        SvnItem::List(items) => items.first().and_then(|i| i.as_string()),
-        _ => item.as_string(),
-    }
-}
-
-fn opt_tuple_bytes(item: &SvnItem) -> Option<Vec<u8>> {
-    match item {
-        SvnItem::List(items) => items.first().and_then(|i| i.as_bytes_string()),
-        _ => item.as_bytes_string(),
-    }
 }
 
 pub(crate) fn opt_tuple_wordish(item: &SvnItem) -> Option<String> {
@@ -743,6 +847,80 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, SvnError::Protocol(_)));
+
+        let change = SvnItem::Word("bad-change".to_string());
+        let err = parse_log_entry(
+            vec![SvnItem::List(vec![change]), SvnItem::Number(10)],
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "log changed-path not a list"));
+
+        let change = SvnItem::List(vec![SvnItem::String(b"/trunk/a.zip".to_vec())]);
+        let err = parse_log_entry(
+            vec![SvnItem::List(vec![change]), SvnItem::Number(10)],
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "log changed-path too short"));
+    }
+
+    #[test]
+    fn parse_log_entry_rejects_malformed_copyfrom() {
+        let change = SvnItem::List(vec![
+            SvnItem::String(b"/trunk/a.zip".to_vec()),
+            SvnItem::Word("A".to_string()),
+            SvnItem::Number(1),
+        ]);
+        let err = parse_log_entry(
+            vec![SvnItem::List(vec![change]), SvnItem::Number(10)],
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "log copy-from not a tuple"));
+
+        let change = SvnItem::List(vec![
+            SvnItem::String(b"/trunk/a.zip".to_vec()),
+            SvnItem::Word("A".to_string()),
+            SvnItem::List(vec![SvnItem::String(b"/branches/a.zip".to_vec())]),
+        ]);
+        let err = parse_log_entry(
+            vec![SvnItem::List(vec![change]), SvnItem::Number(10)],
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, SvnError::Protocol(msg) if msg == "log copy-from tuple must contain path and rev")
+        );
+    }
+
+    #[test]
+    fn parse_log_entry_rejects_malformed_node_flags() {
+        let change = SvnItem::List(vec![
+            SvnItem::String(b"/trunk/a.zip".to_vec()),
+            SvnItem::Word("M".to_string()),
+            SvnItem::List(Vec::new()),
+            SvnItem::Number(1),
+        ]);
+        let err = parse_log_entry(
+            vec![SvnItem::List(vec![change]), SvnItem::Number(10)],
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "log node flags not a tuple"));
+
+        let change = SvnItem::List(vec![
+            SvnItem::String(b"/trunk/a.zip".to_vec()),
+            SvnItem::Word("M".to_string()),
+            SvnItem::List(Vec::new()),
+            SvnItem::List(vec![SvnItem::Word("file".to_string()), SvnItem::Number(1)]),
+        ]);
+        let err = parse_log_entry(
+            vec![SvnItem::List(vec![change]), SvnItem::Number(10)],
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "log text-mods not a bool"));
     }
 
     #[test]
@@ -823,6 +1001,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_list_dirent_rejects_malformed_optional_fields() {
+        let items = vec![
+            SvnItem::String(b"/trunk/a.zip".to_vec()),
+            SvnItem::Number(1),
+        ];
+        let err = parse_list_dirent(items).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "list dirent kind not a word"));
+
+        let items = vec![
+            SvnItem::String(b"/trunk/a.zip".to_vec()),
+            SvnItem::Word("file".to_string()),
+            SvnItem::Word("large".to_string()),
+        ];
+        let err = parse_list_dirent(items).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "list dirent size not a number"));
+    }
+
+    #[test]
     fn parse_get_dir_listing_reads_optional_tuple_strings() {
         let params = vec![
             SvnItem::Number(42),
@@ -868,7 +1064,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_get_dir_listing_skips_invalid_entries() {
+    fn parse_get_dir_listing_rejects_malformed_entries() {
         let params = vec![
             SvnItem::Number(1),
             SvnItem::List(Vec::new()),
@@ -882,9 +1078,30 @@ mod tests {
             ]),
         ];
 
-        let listing = parse_get_dir_listing("trunk", &params).unwrap();
-        assert_eq!(listing.entries.len(), 1);
-        assert_eq!(listing.entries[0].path, "trunk/a.txt");
+        let err = parse_get_dir_listing("trunk", &params).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "get-dir entry not a list"));
+
+        let params = vec![
+            SvnItem::Number(1),
+            SvnItem::List(Vec::new()),
+            SvnItem::List(vec![SvnItem::List(vec![SvnItem::String(
+                b"a.txt".to_vec(),
+            )])]),
+        ];
+        let err = parse_get_dir_listing("trunk", &params).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "get-dir entry too short"));
+
+        let params = vec![
+            SvnItem::Number(1),
+            SvnItem::List(Vec::new()),
+            SvnItem::List(vec![SvnItem::List(vec![
+                SvnItem::String(b"a.txt".to_vec()),
+                SvnItem::Word("file".to_string()),
+                SvnItem::Word("large".to_string()),
+            ])]),
+        ];
+        let err = parse_get_dir_listing("trunk", &params).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "get-dir entry size not a number"));
     }
 
     #[test]
@@ -920,7 +1137,7 @@ mod tests {
             SvnItem::List(vec![SvnItem::String(b"alice".to_vec())]),
         ];
 
-        let entry = parse_stat_params(&entry_items).unwrap();
+        let entry = parse_stat_params(&entry_items).unwrap().unwrap();
         assert_eq!(entry.kind, NodeKind::File);
         assert_eq!(entry.size, Some(10));
         assert_eq!(entry.has_props, Some(true));
@@ -929,27 +1146,50 @@ mod tests {
         assert_eq!(entry.last_author.as_deref(), Some("alice"));
 
         let params = vec![SvnItem::List(entry_items.clone())];
-        assert!(parse_stat_params(&params).is_some());
+        assert!(parse_stat_params(&params).unwrap().is_some());
 
         let params = vec![
             SvnItem::List(vec![SvnItem::Number(123)]),
             SvnItem::List(entry_items.clone()),
         ];
-        assert!(parse_stat_params(&params).is_some());
+        assert!(parse_stat_params(&params).unwrap().is_some());
 
         let params = vec![
             SvnItem::Word("junk".to_string()),
             SvnItem::List(entry_items),
         ];
-        assert!(parse_stat_params(&params).is_some());
+        assert!(parse_stat_params(&params).unwrap().is_some());
     }
 
     #[test]
     fn parse_stat_params_returns_none_for_unknown_or_none_kind() {
         let params = vec![SvnItem::Word("none".to_string())];
-        assert!(parse_stat_params(&params).is_none());
+        assert!(parse_stat_params(&params).unwrap().is_none());
         let params = vec![SvnItem::Word("wat".to_string())];
-        assert!(parse_stat_params(&params).is_none());
+        assert!(parse_stat_params(&params).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_stat_params_rejects_malformed_fields_after_known_kind() {
+        let params = vec![
+            SvnItem::Word("file".to_string()),
+            SvnItem::Word("large".to_string()),
+        ];
+        let err = parse_stat_params(&params).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "stat size not a number"));
+    }
+
+    #[test]
+    fn parse_mergeinfo_catalog_rejects_malformed_entries() {
+        let params = vec![SvnItem::List(vec![SvnItem::Number(1)])];
+        let err = parse_mergeinfo_catalog(&params).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "mergeinfo entry not a list"));
+
+        let params = vec![SvnItem::List(vec![SvnItem::List(vec![SvnItem::String(
+            b"/trunk".to_vec(),
+        )])])];
+        let err = parse_mergeinfo_catalog(&params).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "mergeinfo entry too short"));
     }
 
     #[test]
@@ -971,6 +1211,37 @@ mod tests {
     }
 
     #[test]
+    fn parse_proplist_rejects_malformed_entries() {
+        let props_item = SvnItem::List(vec![SvnItem::List(vec![SvnItem::String(
+            b"missing-value".to_vec(),
+        )])]);
+        let err = parse_proplist(&props_item).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "proplist entry too short"));
+
+        let props_item = SvnItem::List(vec![SvnItem::Number(1)]);
+        let err = parse_proplist(&props_item).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "proplist entry not a list"));
+    }
+
+    #[test]
+    fn parse_propdelta_rejects_malformed_entries() {
+        let deltas = SvnItem::List(vec![SvnItem::List(Vec::new())]);
+        let err = parse_propdelta(&deltas).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "propdelta entry too short"));
+
+        let deltas = SvnItem::List(vec![SvnItem::Number(1)]);
+        let err = parse_propdelta(&deltas).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "propdelta entry not a list"));
+
+        let deltas = SvnItem::List(vec![SvnItem::List(vec![
+            SvnItem::String(b"p".to_vec()),
+            SvnItem::List(vec![SvnItem::Number(1)]),
+        ])]);
+        let err = parse_propdelta(&deltas).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "propdelta value not a string"));
+    }
+
+    #[test]
     fn parse_iproplist_reads_inherited_entries() {
         let props_item = SvnItem::List(vec![SvnItem::List(vec![
             SvnItem::String(b"p".to_vec()),
@@ -985,6 +1256,19 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].path, "/trunk");
         assert_eq!(parsed[0].props.get("p").unwrap(), b"v");
+    }
+
+    #[test]
+    fn parse_iproplist_rejects_malformed_entries() {
+        let iprops_item = SvnItem::List(vec![SvnItem::List(vec![SvnItem::String(
+            b"/trunk".to_vec(),
+        )])]);
+        let err = parse_iproplist(&iprops_item).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "iproplist entry too short"));
+
+        let iprops_item = SvnItem::List(vec![SvnItem::Number(1)]);
+        let err = parse_iproplist(&iprops_item).unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "iproplist entry not a list"));
     }
 
     #[test]
@@ -1029,6 +1313,20 @@ mod tests {
         assert_eq!(info.uuid, "uuid");
         assert_eq!(info.root_url, "svn://example.com/repo");
         assert_eq!(info.capabilities.len(), 2);
+    }
+
+    #[test]
+    fn parse_repos_info_rejects_malformed_caps() {
+        let params = vec![
+            SvnItem::String(b"uuid".to_vec()),
+            SvnItem::String(b"svn://example.com/repo".to_vec()),
+            SvnItem::List(vec![SvnItem::Number(1)]),
+        ];
+
+        let err = parse_repos_info(&params).unwrap_err();
+        assert!(
+            matches!(err, SvnError::Protocol(msg) if msg == "repos-info caps entry not a word")
+        );
     }
 
     #[test]

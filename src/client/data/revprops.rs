@@ -27,19 +27,7 @@ impl RaSvnSession {
                 let params = SvnItem::List(vec![SvnItem::Number(rev), SvnItem::String(name)]);
                 let response = conn.call("rev-prop", params).await?;
                 let params = response.success_params("rev-prop")?;
-                let Some(value_tuple) = params.first() else {
-                    return Ok(None);
-                };
-                let items = value_tuple
-                    .as_list()
-                    .ok_or_else(|| SvnError::Protocol("rev-prop value tuple not a list".into()))?;
-                let Some(value) = items.first() else {
-                    return Ok(None);
-                };
-                let value = value
-                    .as_bytes_string()
-                    .ok_or_else(|| SvnError::Protocol("rev-prop value not a string".into()))?;
-                Ok(Some(value))
+                parse_rev_prop_value(params)
             })
         })
         .await
@@ -135,5 +123,27 @@ impl RaSvnSession {
             self.conn = None;
         }
         result
+    }
+}
+
+fn parse_rev_prop_value(params: &[SvnItem]) -> Result<Option<Vec<u8>>, SvnError> {
+    if params.len() != 1 {
+        return Err(SvnError::Protocol(
+            "rev-prop response must contain exactly one value tuple".into(),
+        ));
+    }
+
+    let items = params[0]
+        .as_list()
+        .ok_or_else(|| SvnError::Protocol("rev-prop value tuple not a list".into()))?;
+    match items.as_slice() {
+        [] => Ok(None),
+        [value] => value
+            .as_bytes_string()
+            .map(Some)
+            .ok_or_else(|| SvnError::Protocol("rev-prop value not a string".into())),
+        _ => Err(SvnError::Protocol(
+            "rev-prop value tuple must contain at most one value".into(),
+        )),
     }
 }

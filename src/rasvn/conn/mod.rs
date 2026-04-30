@@ -1,6 +1,6 @@
 use super::SvnItem;
 use super::encode_item;
-use super::parse::{parse_repos_info, parse_server_error};
+use super::parse::{parse_repos_info, parse_server_error, parse_word_list};
 #[cfg(feature = "cyrus-sasl")]
 use super::sasl::{CyrusSasl, SASL_CONTINUE, base64_decode, base64_encode};
 use super::wire::encode_command_item;

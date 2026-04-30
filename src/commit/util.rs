@@ -42,7 +42,7 @@ pub(super) fn parent_dir(path: &str) -> String {
 }
 
 pub(super) fn dir_prefixes(dir: &str) -> Vec<String> {
-    if dir.trim().is_empty() {
+    if dir.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();

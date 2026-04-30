@@ -1,7 +1,8 @@
+use std::fmt;
 use std::path::PathBuf;
 
 /// SSH authentication options for `svn+ssh://` transports.
-#[derive(Clone, Debug)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub enum SshAuth {
     /// Password authentication.
     Password(String),
@@ -23,8 +24,22 @@ pub enum SshAuth {
     None,
 }
 
+impl fmt::Debug for SshAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Password(_) => f.debug_tuple("Password").field(&"<redacted>").finish(),
+            Self::KeyFile { path, passphrase } => f
+                .debug_struct("KeyFile")
+                .field("path", path)
+                .field("passphrase", &passphrase.as_ref().map(|_| "<redacted>"))
+                .finish(),
+            Self::None => f.write_str("None"),
+        }
+    }
+}
+
 /// SSH host key verification policy.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum SshHostKeyPolicy {
     /// Accept any server host key (insecure; vulnerable to MITM).
     AcceptAny,
@@ -35,7 +50,7 @@ pub enum SshHostKeyPolicy {
 }
 
 /// Configuration for the `svn+ssh://` transport.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SshConfig {
     username: Option<String>,
     pub(super) auth: SshAuth,

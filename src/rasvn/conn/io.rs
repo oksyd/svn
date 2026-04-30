@@ -166,9 +166,16 @@ impl RaSvnConnection {
         let kind = parts[0]
             .as_word()
             .ok_or_else(|| SvnError::Protocol("command response kind not a word".into()))?;
+        if parts.len() != 2 {
+            return Err(SvnError::Protocol(
+                "command response must contain kind and parameter list".into(),
+            ));
+        }
         match kind.as_str() {
             "success" => {
-                let params = parts.get(1).and_then(|i| i.as_list()).unwrap_or_default();
+                let params = parts[1].as_list().ok_or_else(|| {
+                    SvnError::Protocol("command response params not a list".into())
+                })?;
                 Ok(CommandResponse {
                     success: true,
                     params,
@@ -176,7 +183,9 @@ impl RaSvnConnection {
                 })
             }
             "failure" => {
-                let errs = parts.get(1).and_then(|i| i.as_list()).unwrap_or_default();
+                let errs = parts[1].as_list().ok_or_else(|| {
+                    SvnError::Protocol("command response errors not a list".into())
+                })?;
                 Ok(CommandResponse {
                     success: false,
                     params: Vec::new(),

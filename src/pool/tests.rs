@@ -456,3 +456,41 @@ fn session_pools_partitions_by_custom_key() {
         assert_eq!(accepted.load(Ordering::SeqCst), 2);
     });
 }
+
+#[test]
+fn session_pool_key_partitions_by_transport_scheme() {
+    let svn_url = SvnUrl::parse("svn://example.com:22/repo").unwrap();
+    let ssh_url = SvnUrl::parse("svn+ssh://example.com/repo").unwrap();
+
+    let svn_key = SessionPoolKey::for_client(&RaSvnClient::new(svn_url, None, None));
+    let ssh_key = SessionPoolKey::for_client(&RaSvnClient::new(ssh_url, None, None));
+
+    assert_ne!(svn_key, ssh_key);
+}
+
+#[test]
+fn session_pool_key_partitions_by_url_username() {
+    let alice_url = SvnUrl::parse("svn+ssh://alice@example.com/repo").unwrap();
+    let bob_url = SvnUrl::parse("svn+ssh://bob@example.com/repo").unwrap();
+
+    let alice_key = SessionPoolKey::for_client(&RaSvnClient::new(alice_url, None, None));
+    let bob_key = SessionPoolKey::for_client(&RaSvnClient::new(bob_url, None, None));
+
+    assert_ne!(alice_key, bob_key);
+}
+
+#[cfg(feature = "ssh")]
+#[test]
+fn session_pool_key_partitions_by_ssh_config() {
+    let url = SvnUrl::parse("svn+ssh://example.com/repo").unwrap();
+    let client_a = RaSvnClient::new(url.clone(), None, None)
+        .with_ssh_config(crate::ssh::SshConfig::default().accept_any_host_key());
+    let client_b = RaSvnClient::new(url, None, None).with_ssh_config(crate::ssh::SshConfig::new(
+        crate::ssh::SshAuth::Password("secret".to_string()),
+    ));
+
+    assert_ne!(
+        SessionPoolKey::for_client(&client_a),
+        SessionPoolKey::for_client(&client_b)
+    );
+}

@@ -414,6 +414,168 @@ fn drive_editor_rejects_unsafe_paths() {
 }
 
 #[test]
+fn drive_editor_rejects_non_list_command_params() {
+    run_async(async {
+        let (mut conn, mut server) = connected_conn().await;
+
+        let expected_failure = SvnItem::List(vec![
+            SvnItem::Word("failure".to_string()),
+            SvnItem::List(vec![SvnItem::List(vec![
+                SvnItem::Number(1),
+                SvnItem::String(b"protocol error: editor command params not a list".to_vec()),
+                SvnItem::String(Vec::new()),
+                SvnItem::Number(0),
+            ])]),
+        ]);
+
+        let server_task = tokio::spawn(async move {
+            write_item_line(
+                &mut server,
+                &SvnItem::List(vec![
+                    SvnItem::Word("close-edit".to_string()),
+                    SvnItem::Number(1),
+                ]),
+            )
+            .await;
+
+            let failure_line = read_line(&mut server).await;
+
+            write_item_line(
+                &mut server,
+                &SvnItem::List(vec![
+                    SvnItem::Word("abort-edit".to_string()),
+                    SvnItem::List(Vec::new()),
+                ]),
+            )
+            .await;
+
+            failure_line
+        });
+
+        let status = drive_editor(&mut conn, None, false).await.unwrap();
+        assert!(matches!(
+            status,
+            EditorDriveStatus::Aborted(SvnError::Protocol(msg))
+                if msg == "editor command params not a list"
+        ));
+
+        let failure_line = server_task.await.unwrap();
+        assert_eq!(failure_line, encode_line(&expected_failure));
+    });
+}
+
+#[test]
+fn drive_editor_rejects_malformed_copy_from_tuple() {
+    run_async(async {
+        let (mut conn, mut server) = connected_conn().await;
+
+        let expected_failure = SvnItem::List(vec![
+            SvnItem::Word("failure".to_string()),
+            SvnItem::List(vec![SvnItem::List(vec![
+                SvnItem::Number(1),
+                SvnItem::String(b"protocol error: copy-from not a tuple".to_vec()),
+                SvnItem::String(Vec::new()),
+                SvnItem::Number(0),
+            ])]),
+        ]);
+
+        let server_task = tokio::spawn(async move {
+            write_item_line(
+                &mut server,
+                &SvnItem::List(vec![
+                    SvnItem::Word("add-file".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::String(b"trunk/file.txt".to_vec()),
+                        SvnItem::String(b"d".to_vec()),
+                        SvnItem::String(b"f".to_vec()),
+                        SvnItem::Number(1),
+                    ]),
+                ]),
+            )
+            .await;
+
+            let failure_line = read_line(&mut server).await;
+
+            write_item_line(
+                &mut server,
+                &SvnItem::List(vec![
+                    SvnItem::Word("abort-edit".to_string()),
+                    SvnItem::List(Vec::new()),
+                ]),
+            )
+            .await;
+
+            failure_line
+        });
+
+        let status = drive_editor(&mut conn, None, false).await.unwrap();
+        assert!(matches!(
+            status,
+            EditorDriveStatus::Aborted(SvnError::Protocol(msg))
+                if msg == "copy-from not a tuple"
+        ));
+
+        let failure_line = server_task.await.unwrap();
+        assert_eq!(failure_line, encode_line(&expected_failure));
+    });
+}
+
+#[test]
+fn drive_editor_rejects_malformed_optional_property_value() {
+    run_async(async {
+        let (mut conn, mut server) = connected_conn().await;
+
+        let expected_failure = SvnItem::List(vec![
+            SvnItem::Word("failure".to_string()),
+            SvnItem::List(vec![SvnItem::List(vec![
+                SvnItem::Number(1),
+                SvnItem::String(b"protocol error: change-file-prop value not a string".to_vec()),
+                SvnItem::String(Vec::new()),
+                SvnItem::Number(0),
+            ])]),
+        ]);
+
+        let server_task = tokio::spawn(async move {
+            write_item_line(
+                &mut server,
+                &SvnItem::List(vec![
+                    SvnItem::Word("change-file-prop".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::String(b"f".to_vec()),
+                        SvnItem::String(b"svn:mime-type".to_vec()),
+                        SvnItem::List(vec![SvnItem::Number(1)]),
+                    ]),
+                ]),
+            )
+            .await;
+
+            let failure_line = read_line(&mut server).await;
+
+            write_item_line(
+                &mut server,
+                &SvnItem::List(vec![
+                    SvnItem::Word("abort-edit".to_string()),
+                    SvnItem::List(Vec::new()),
+                ]),
+            )
+            .await;
+
+            failure_line
+        });
+
+        let status = drive_editor(&mut conn, None, false).await.unwrap();
+        assert!(matches!(
+            status,
+            EditorDriveStatus::Aborted(SvnError::Protocol(msg))
+                if msg == "change-file-prop value not a string"
+        ));
+
+        let failure_line = server_task.await.unwrap();
+        assert_eq!(failure_line, encode_line(&expected_failure));
+    });
+}
+
+#[test]
 fn drive_editor_sends_failure_and_drains_on_handler_error() {
     run_async(async {
         let (mut conn, mut server) = connected_conn().await;

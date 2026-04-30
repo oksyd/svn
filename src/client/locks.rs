@@ -14,16 +14,7 @@ impl RaSvnSession {
                     )
                     .await?;
                 let params = response.success_params("get-lock")?;
-                let Some(tuple) = params.first() else {
-                    return Ok(None);
-                };
-                let list = tuple
-                    .as_list()
-                    .ok_or_else(|| SvnError::Protocol("get-lock tuple not a list".into()))?;
-                let Some(lock_item) = list.first() else {
-                    return Ok(None);
-                };
-                Ok(Some(parse_lockdesc(lock_item)?))
+                parse_optional_lockdesc_response(params, "get-lock")
             })
         })
         .await
@@ -158,6 +149,12 @@ impl RaSvnSession {
                                 })?;
                             match status.as_str() {
                                 "success" => {
+                                    if params.len() != 1 {
+                                        return Err(SvnError::Protocol(
+                                            "lock-many success must contain exactly one lockdesc"
+                                                .into(),
+                                        ));
+                                    }
                                     let lock_item = params.first().ok_or_else(|| {
                                         SvnError::Protocol(
                                             "lock-many success missing lockdesc".into(),
@@ -324,6 +321,12 @@ impl RaSvnSession {
                                 })?;
                             match status.as_str() {
                                 "success" => {
+                                    if params.len() != 1 {
+                                        return Err(SvnError::Protocol(
+                                            "unlock-many success must contain exactly one path"
+                                                .into(),
+                                        ));
+                                    }
                                     let path = params
                                         .first()
                                         .and_then(|i| i.as_string())
@@ -407,5 +410,28 @@ impl RaSvnSession {
             self.conn = None;
         }
         result
+    }
+}
+
+fn parse_optional_lockdesc_response(
+    params: &[SvnItem],
+    ctx: &str,
+) -> Result<Option<LockDesc>, SvnError> {
+    if params.len() != 1 {
+        return Err(SvnError::Protocol(format!(
+            "{ctx} response must contain exactly one lock tuple"
+        )));
+    }
+
+    let tuple = &params[0];
+    let items = tuple
+        .as_list()
+        .ok_or_else(|| SvnError::Protocol(format!("{ctx} lock tuple not a list")))?;
+    match items.as_slice() {
+        [] => Ok(None),
+        [lock_item] => Ok(Some(parse_lockdesc(lock_item)?)),
+        _ => Err(SvnError::Protocol(format!(
+            "{ctx} lock tuple must contain at most one lockdesc"
+        ))),
     }
 }

@@ -81,6 +81,53 @@ fn log_merges_requested_revprops_into_map() {
 }
 
 #[test]
+fn log_with_options_normalizes_and_rejects_target_paths() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let expected_log = SvnItem::List(vec![
+            SvnItem::Word("log".to_string()),
+            SvnItem::List(vec![
+                SvnItem::List(vec![SvnItem::String(b"trunk/sub".to_vec())]),
+                SvnItem::List(Vec::new()),
+                SvnItem::List(Vec::new()),
+                SvnItem::Bool(true),
+                SvnItem::Bool(true),
+                SvnItem::Number(0),
+                SvnItem::Bool(false),
+                SvnItem::Word("all-revprops".to_string()),
+            ]),
+        ]);
+        let cmd_success = SvnItem::List(vec![
+            SvnItem::Word("success".to_string()),
+            SvnItem::List(Vec::new()),
+        ]);
+
+        let server_task = tokio::spawn(async move {
+            assert_eq!(read_line(&mut server).await, encode_line(&expected_log));
+            write_item_line(&mut server, &auth_request("realm")).await;
+            write_item_line(&mut server, &SvnItem::Word("done".to_string())).await;
+            write_item_line(&mut server, &cmd_success).await;
+        });
+
+        let options = LogOptions {
+            target_paths: vec!["//trunk\\\\sub//./".to_string()],
+            ..LogOptions::default()
+        };
+        let entries = session.log_with_options(&options).await.unwrap();
+        assert!(entries.is_empty());
+        server_task.await.unwrap();
+
+        let options = LogOptions {
+            target_paths: vec!["trunk/../x".to_string()],
+            ..LogOptions::default()
+        };
+        let err = session.log_with_options(&options).await.unwrap_err();
+        assert!(matches!(err, SvnError::InvalidPath(_)));
+    });
+}
+
+#[test]
 fn log_each_retrying_reconnects_and_dedups_on_unexpected_eof() {
     run_async(async {
         use std::sync::Arc;

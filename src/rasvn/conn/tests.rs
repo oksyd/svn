@@ -354,6 +354,50 @@ fn read_item_requires_whitespace_after_strings() {
 }
 
 #[test]
+fn read_command_response_rejects_malformed_payload_shape() {
+    run_async(async {
+        let cases = [
+            (
+                SvnItem::List(vec![SvnItem::Word("success".to_string())]),
+                "kind and parameter list",
+            ),
+            (
+                SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::Word("not-a-list".to_string()),
+                ]),
+                "params not a list",
+            ),
+            (
+                SvnItem::List(vec![
+                    SvnItem::Word("failure".to_string()),
+                    SvnItem::Number(1),
+                ]),
+                "errors not a list",
+            ),
+            (
+                SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(Vec::new()),
+                    SvnItem::List(Vec::new()),
+                ]),
+                "kind and parameter list",
+            ),
+        ];
+
+        for (item, expected) in cases {
+            let (mut conn, mut server) = connected_conn(None, None).await;
+            write_item_line(&mut server, &item).await;
+            let err = conn.read_command_response().await.unwrap_err();
+            assert!(
+                matches!(err, SvnError::Protocol(ref msg) if msg.contains(expected)),
+                "unexpected error for {item:?}: {err:?}"
+            );
+        }
+    });
+}
+
+#[test]
 fn handshake_writes_expected_client_greeting() {
     run_async(async {
         let (mut conn, mut server) = connected_conn(None, None).await;
@@ -521,6 +565,32 @@ fn handshake_rejects_servers_without_v2_support() {
 
         let err = conn.handshake().await.unwrap_err();
         assert!(matches!(err, SvnError::Protocol(_)));
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
+fn handshake_rejects_malformed_capabilities() {
+    run_async(async {
+        let (mut conn, mut server) = connected_conn(None, None).await;
+        let server_task = tokio::spawn(async move {
+            let greeting = SvnItem::List(vec![
+                SvnItem::Word("success".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::Number(2),
+                    SvnItem::Number(2),
+                    SvnItem::List(Vec::new()),
+                    SvnItem::List(vec![
+                        SvnItem::Word("edit-pipeline".to_string()),
+                        SvnItem::Number(1),
+                    ]),
+                ]),
+            ]);
+            write_item_line(&mut server, &greeting).await;
+        });
+
+        let err = conn.handshake().await.unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "greeting caps entry not a word"));
         server_task.await.unwrap();
     });
 }

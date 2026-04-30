@@ -64,6 +64,11 @@ impl SvnUrl {
                     "invalid url (empty username): {input}"
                 )));
             }
+            if user.chars().any(char::is_whitespace) {
+                return Err(SvnError::InvalidUrl(format!(
+                    "invalid url username: {input}"
+                )));
+            }
             (Some(user.to_string()), hostport)
         } else {
             (None, authority)
@@ -83,9 +88,7 @@ impl SvnUrl {
             if after.is_empty() {
                 (host.to_string(), default_port)
             } else if let Some(port_str) = after.strip_prefix(':') {
-                let port = port_str
-                    .parse::<u16>()
-                    .map_err(|_| SvnError::InvalidUrl(format!("invalid port in url: {input}")))?;
+                let port = parse_port(port_str, input)?;
                 (host.to_string(), port)
             } else {
                 return Err(SvnError::InvalidUrl(format!("invalid url: {input}")));
@@ -97,9 +100,7 @@ impl SvnUrl {
                     let (h, port_str) = hostport
                         .rsplit_once(':')
                         .ok_or_else(|| SvnError::InvalidUrl(format!("invalid url: {input}")))?;
-                    let port = port_str.parse::<u16>().map_err(|_| {
-                        SvnError::InvalidUrl(format!("invalid port in url: {input}"))
-                    })?;
+                    let port = parse_port(port_str, input)?;
                     (h.to_string(), port)
                 }
                 _ => {
@@ -114,6 +115,11 @@ impl SvnUrl {
         if host.trim().is_empty() {
             return Err(SvnError::InvalidUrl(format!(
                 "missing host in url: {input}"
+            )));
+        }
+        if host.chars().any(char::is_whitespace) {
+            return Err(SvnError::InvalidUrl(format!(
+                "invalid host in url: {input}"
             )));
         }
 
@@ -141,6 +147,40 @@ impl SvnUrl {
             format!("{host}:{}", self.port)
         }
     }
+
+    /// Returns the normalized URL scheme (`svn` or `svn+ssh`).
+    pub fn scheme(&self) -> &str {
+        if self.url.starts_with("svn+ssh://") {
+            "svn+ssh"
+        } else {
+            "svn"
+        }
+    }
+
+    /// Returns the username embedded in the URL authority, if any.
+    pub fn username(&self) -> Option<&str> {
+        let rest = self
+            .url
+            .strip_prefix("svn+ssh://")
+            .or_else(|| self.url.strip_prefix("svn://"))?;
+        let authority = rest
+            .split_once('/')
+            .map(|(authority, _)| authority)
+            .unwrap_or(rest);
+        authority.rsplit_once('@').map(|(user, _)| user)
+    }
+}
+
+fn parse_port(port_str: &str, input: &str) -> Result<u16, SvnError> {
+    let port = port_str
+        .parse::<u16>()
+        .map_err(|_| SvnError::InvalidUrl(format!("invalid port in url: {input}")))?;
+    if port == 0 {
+        return Err(SvnError::InvalidUrl(format!(
+            "invalid port in url: {input}"
+        )));
+    }
+    Ok(port)
 }
 
 impl std::fmt::Display for SvnUrl {
@@ -194,11 +234,15 @@ mod tests {
         assert_eq!(parsed.host, "example.com");
         assert_eq!(parsed.port, 22);
         assert_eq!(parsed.url, "svn+ssh://alice@example.com:22/repo");
+        assert_eq!(parsed.scheme(), "svn+ssh");
+        assert_eq!(parsed.username(), Some("alice"));
 
         let parsed = SvnUrl::parse("svn://alice@example.com/repo").unwrap();
         assert_eq!(parsed.host, "example.com");
         assert_eq!(parsed.port, 3690);
         assert_eq!(parsed.url, "svn://alice@example.com:3690/repo");
+        assert_eq!(parsed.scheme(), "svn");
+        assert_eq!(parsed.username(), Some("alice"));
     }
 
     #[test]
@@ -226,6 +270,8 @@ mod tests {
         assert!(matches!(err, SvnError::InvalidUrl(_)));
         let err = SvnUrl::parse("svn://example.com:70000/repo").unwrap_err();
         assert!(matches!(err, SvnError::InvalidUrl(_)));
+        let err = SvnUrl::parse("svn://example.com:0/repo").unwrap_err();
+        assert!(matches!(err, SvnError::InvalidUrl(_)));
     }
 
     #[test]
@@ -235,9 +281,20 @@ mod tests {
     }
 
     #[test]
+    fn svn_url_parse_rejects_whitespace_in_authority() {
+        let err = SvnUrl::parse("svn://exa mple.com/repo").unwrap_err();
+        assert!(matches!(err, SvnError::InvalidUrl(_)));
+
+        let err = SvnUrl::parse("svn+ssh://ali ce@example.com/repo").unwrap_err();
+        assert!(matches!(err, SvnError::InvalidUrl(_)));
+    }
+
+    #[test]
     fn svn_url_parse_trims_and_accepts_uppercase_scheme() {
         let parsed = SvnUrl::parse("  SVN://example.com/repo  ").unwrap();
         assert_eq!(parsed.url, "svn://example.com:3690/repo");
+        assert_eq!(parsed.scheme(), "svn");
+        assert_eq!(parsed.username(), None);
     }
 
     #[test]

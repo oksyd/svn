@@ -137,7 +137,7 @@ impl RaSvnSession {
 
                     let response = conn.call("stat", params).await?;
                     let params = response.success_params("stat")?;
-                    Ok(parse_stat_params(params))
+                    parse_stat_params(params)
                 })
             })
             .await?;

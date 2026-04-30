@@ -70,6 +70,70 @@ fn get_lock_and_get_locks_parse_lockdesc() {
 }
 
 #[test]
+fn get_lock_distinguishes_empty_and_malformed_lock_tuple() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let expected_get_lock = SvnItem::List(vec![
+            SvnItem::Word("get-lock".to_string()),
+            SvnItem::List(vec![SvnItem::String(b"trunk/file.txt".to_vec())]),
+        ]);
+
+        let lockdesc = SvnItem::List(vec![
+            SvnItem::String(b"/trunk/file.txt".to_vec()),
+            SvnItem::String(b"token".to_vec()),
+            SvnItem::String(b"alice".to_vec()),
+            SvnItem::List(Vec::new()),
+            SvnItem::String(b"2025-01-01".to_vec()),
+        ]);
+
+        let server_task = tokio::spawn(async move {
+            let responses = [
+                SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(vec![SvnItem::List(Vec::new())]),
+                ]),
+                SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(Vec::new()),
+                ]),
+                SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(vec![SvnItem::List(vec![
+                        lockdesc,
+                        SvnItem::String(b"extra".to_vec()),
+                    ])]),
+                ]),
+            ];
+
+            for (idx, response) in responses.into_iter().enumerate() {
+                assert_eq!(
+                    read_line(&mut server).await,
+                    encode_line(&expected_get_lock)
+                );
+                write_item_line(&mut server, &auth_request(&format!("realm-{idx}"))).await;
+                write_item_line(&mut server, &response).await;
+            }
+        });
+
+        let lock = session.get_lock("trunk/file.txt").await.unwrap();
+        assert_eq!(lock, None);
+
+        let err = session.get_lock("trunk/file.txt").await.unwrap_err();
+        assert!(
+            matches!(err, SvnError::Protocol(msg) if msg == "get-lock response must contain exactly one lock tuple")
+        );
+
+        let err = session.get_lock("trunk/file.txt").await.unwrap_err();
+        assert!(
+            matches!(err, SvnError::Protocol(msg) if msg == "get-lock lock tuple must contain at most one lockdesc")
+        );
+
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
 fn lock_does_not_drop_connection_on_server_failure() {
     run_async(async {
         let (mut session, mut server) = connected_session().await;

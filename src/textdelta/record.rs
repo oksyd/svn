@@ -66,6 +66,12 @@ impl EditorEventHandler for TextDeltaRecorder {
             | EditorEvent::OpenFile {
                 path, file_token, ..
             } => {
+                if self.pending.contains_key(&file_token) {
+                    return Err(SvnError::Protocol(format!(
+                        "file token '{file_token}' reused with pending textdelta"
+                    )));
+                }
+                self.last_completed.remove(&file_token);
                 self.file_paths.insert(file_token, path);
             }
             EditorEvent::ApplyTextDelta {
@@ -118,22 +124,39 @@ impl EditorEventHandler for TextDeltaRecorder {
                 file_token,
                 text_checksum,
             } => {
+                let known_file = self.file_paths.remove(&file_token).is_some();
+                if !known_file {
+                    return Err(SvnError::Protocol(format!(
+                        "close-file for unknown file token '{file_token}'"
+                    )));
+                }
                 if let Some(text_checksum) = text_checksum
                     && let Some(&idx) = self.last_completed.get(&file_token)
                     && let Some(record) = self.completed.get_mut(idx)
                 {
                     record.text_checksum = Some(text_checksum);
                 }
-                self.file_paths.remove(&file_token);
+                self.last_completed.remove(&file_token);
             }
-            EditorEvent::CloseEdit | EditorEvent::AbortEdit | EditorEvent::FinishReplay
-                if !self.pending.is_empty() =>
-            {
-                return Err(SvnError::Protocol(
-                    "editor drive ended with an unfinished textdelta".into(),
-                ));
+            EditorEvent::AbortEdit => {
+                self.file_paths.clear();
+                self.pending.clear();
+                self.last_completed.clear();
+                self.completed.clear();
             }
-            EditorEvent::CloseEdit | EditorEvent::AbortEdit | EditorEvent::FinishReplay => {}
+            EditorEvent::CloseEdit | EditorEvent::FinishReplay => {
+                if !self.pending.is_empty() {
+                    return Err(SvnError::Protocol(
+                        "editor drive ended with an unfinished textdelta".into(),
+                    ));
+                }
+                if !self.file_paths.is_empty() {
+                    return Err(SvnError::Protocol(
+                        "editor drive ended with an unclosed file".into(),
+                    ));
+                }
+                self.last_completed.clear();
+            }
             _ => {}
         }
 

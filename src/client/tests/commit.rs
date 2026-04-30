@@ -52,6 +52,52 @@ fn commit_builder_put_file_creates_missing_parent_dirs() {
 }
 
 #[test]
+fn commit_builder_preserves_space_only_directory_names() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let base_rev = 11u64;
+        let server_task = tokio::spawn(async move {
+            for (path, kind) in [(" ", "none"), (" /file.txt", "none")] {
+                let expected = SvnItem::List(vec![
+                    SvnItem::Word("check-path".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::String(path.as_bytes().to_vec()),
+                        SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                    ]),
+                ]);
+                assert_eq!(read_line(&mut server).await, encode_line(&expected));
+                write_item_line(&mut server, &auth_request("realm")).await;
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("success".to_string()),
+                        SvnItem::List(vec![SvnItem::Word(kind.to_string())]),
+                    ]),
+                )
+                .await;
+            }
+        });
+
+        let builder = crate::CommitBuilder::new()
+            .with_base_rev(base_rev)
+            .put_file(" /file.txt", b"hello".to_vec());
+        let commands = builder.build_editor_commands(&mut session).await.unwrap();
+
+        assert!(matches!(
+            &commands[1],
+            EditorCommand::AddDir { path, .. } if path == " "
+        ));
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            EditorCommand::AddFile { path, .. } if path == " /file.txt"
+        )));
+
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
 fn commit_builder_delete_emits_delete_entry() {
     run_async(async {
         let (mut session, mut server) = connected_session().await;
@@ -181,6 +227,48 @@ fn commit_builder_copy_file_emits_add_file_copy_from() {
                     && matches!(copy_from.as_ref(), Some((p, r)) if p == "trunk/a.txt" && *r == base_rev)
         )));
 
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
+fn commit_builder_rejects_edit_inside_copied_directory() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let base_rev = 3u64;
+        let server_task = tokio::spawn(async move {
+            let expected = SvnItem::List(vec![
+                SvnItem::Word("check-path".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::String(b"trunk/srcdir".to_vec()),
+                    SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                ]),
+            ]);
+            assert_eq!(read_line(&mut server).await, encode_line(&expected));
+            write_item_line(&mut server, &auth_request("realm")).await;
+            write_item_line(
+                &mut server,
+                &SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(vec![SvnItem::Word("dir".to_string())]),
+                ]),
+            )
+            .await;
+        });
+
+        let builder = crate::CommitBuilder::new()
+            .with_base_rev(base_rev)
+            .copy("trunk/srcdir", "branches/copied")
+            .put_file("branches/copied/file.txt", b"hello".to_vec());
+        let err = builder
+            .build_editor_commands(&mut session)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, SvnError::Protocol(message) if message.contains("inside copied directory"))
+        );
         server_task.await.unwrap();
     });
 }

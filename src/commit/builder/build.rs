@@ -198,6 +198,25 @@ impl CommitBuilder {
             }
         }
 
+        let copied_dirs: Vec<String> = dir_ops
+            .iter()
+            .filter(|(_, op)| matches!(op.action.as_ref(), Some(DirAction::Copy { .. })))
+            .map(|(path, _)| path.clone())
+            .collect();
+        for copied_dir in &copied_dirs {
+            let prefix = format!("{copied_dir}/");
+            if file_ops.keys().any(|path| path.starts_with(&prefix))
+                || delete_paths.iter().any(|path| path.starts_with(&prefix))
+                || dir_ops
+                    .keys()
+                    .any(|path| path != copied_dir && path.starts_with(&prefix))
+            {
+                return Err(SvnError::Protocol(format!(
+                    "editing inside copied directory '{copied_dir}' is not supported by CommitBuilder"
+                )));
+            }
+        }
+
         let mut tasks = Vec::<Task>::new();
         for dir in dir_ops.keys() {
             tasks.push(Task::Dir(dir.clone()));

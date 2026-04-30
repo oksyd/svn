@@ -334,3 +334,155 @@ fn recorder_tracks_chunks_and_checksums() {
     assert_eq!(d.text_checksum.as_deref(), Some("text"));
     assert_eq!(d.chunks, vec![vec![1, 2, 3]]);
 }
+
+#[test]
+fn recorder_does_not_apply_stale_checksum_when_file_token_is_reused() {
+    let mut recorder = TextDeltaRecorder::new();
+
+    crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::OpenFile {
+            path: "trunk/old.txt".to_string(),
+            dir_token: "d1".to_string(),
+            file_token: "f1".to_string(),
+            rev: 1,
+        },
+    )
+    .unwrap();
+    crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::ApplyTextDelta {
+            file_token: "f1".to_string(),
+            base_checksum: None,
+        },
+    )
+    .unwrap();
+    crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::TextDeltaChunk {
+            file_token: "f1".to_string(),
+            chunk: vec![1],
+        },
+    )
+    .unwrap();
+    crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::TextDeltaEnd {
+            file_token: "f1".to_string(),
+        },
+    )
+    .unwrap();
+    crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::CloseFile {
+            file_token: "f1".to_string(),
+            text_checksum: Some("old".to_string()),
+        },
+    )
+    .unwrap();
+
+    crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::OpenFile {
+            path: "trunk/new.txt".to_string(),
+            dir_token: "d1".to_string(),
+            file_token: "f1".to_string(),
+            rev: 2,
+        },
+    )
+    .unwrap();
+    crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::CloseFile {
+            file_token: "f1".to_string(),
+            text_checksum: Some("new".to_string()),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(recorder.completed().len(), 1);
+    assert_eq!(
+        recorder.completed()[0].text_checksum.as_deref(),
+        Some("old")
+    );
+}
+
+#[test]
+fn recorder_rejects_close_file_for_unknown_token() {
+    let mut recorder = TextDeltaRecorder::new();
+
+    let err = crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::CloseFile {
+            file_token: "missing".to_string(),
+            text_checksum: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(err, SvnError::Protocol(message) if message.contains("unknown file token")));
+}
+
+#[test]
+fn recorder_rejects_close_edit_with_unclosed_file() {
+    let mut recorder = TextDeltaRecorder::new();
+
+    crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::OpenFile {
+            path: "trunk/hello.txt".to_string(),
+            dir_token: "d1".to_string(),
+            file_token: "f1".to_string(),
+            rev: 1,
+        },
+    )
+    .unwrap();
+
+    let err = crate::editor::EditorEventHandler::on_event(&mut recorder, EditorEvent::CloseEdit)
+        .unwrap_err();
+    assert!(matches!(err, SvnError::Protocol(message) if message.contains("unclosed file")));
+}
+
+#[test]
+fn recorder_clears_pending_state_on_abort_edit() {
+    let mut recorder = TextDeltaRecorder::new();
+
+    crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::OpenFile {
+            path: "trunk/hello.txt".to_string(),
+            dir_token: "d1".to_string(),
+            file_token: "f1".to_string(),
+            rev: 1,
+        },
+    )
+    .unwrap();
+    crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::ApplyTextDelta {
+            file_token: "f1".to_string(),
+            base_checksum: None,
+        },
+    )
+    .unwrap();
+    crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::TextDeltaChunk {
+            file_token: "f1".to_string(),
+            chunk: vec![1],
+        },
+    )
+    .unwrap();
+
+    crate::editor::EditorEventHandler::on_event(&mut recorder, EditorEvent::AbortEdit).unwrap();
+    assert!(recorder.completed().is_empty());
+
+    let err = crate::editor::EditorEventHandler::on_event(
+        &mut recorder,
+        EditorEvent::TextDeltaEnd {
+            file_token: "f1".to_string(),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SvnError::Protocol(message) if message.contains("unknown file token")));
+}

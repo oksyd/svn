@@ -103,6 +103,11 @@ impl RaSvnClient {
         self.reconnect_retries
     }
 
+    #[cfg(feature = "ssh")]
+    pub(crate) fn ssh_config(&self) -> Option<&crate::ssh::SshConfig> {
+        self.ssh.as_ref()
+    }
+
     /// Sets the SSH transport configuration for `svn+ssh://` URLs.
     ///
     /// This is ignored for `svn://` URLs.
@@ -152,11 +157,7 @@ impl RaSvnClient {
     }
 
     pub(super) async fn connect(&self) -> Result<(RaSvnConnection, ServerInfo), SvnError> {
-        let is_tunneled = self
-            .base_url
-            .url
-            .get(.."svn+ssh://".len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("svn+ssh://"));
+        let is_tunneled = self.base_url.scheme() == "svn+ssh";
         if is_tunneled {
             #[cfg(feature = "ssh")]
             {
@@ -245,11 +246,7 @@ impl RaSvnClient {
                 #[cfg(feature = "cyrus-sasl")]
                 remote_addrport,
                 url: self.base_url.url.clone(),
-                is_tunneled: self
-                    .base_url
-                    .url
-                    .get(.."svn+ssh://".len())
-                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("svn+ssh://")),
+                is_tunneled: self.base_url.scheme() == "svn+ssh",
                 ra_client: self.ra_client.clone(),
                 read_timeout: self.read_timeout,
                 write_timeout: self.write_timeout,

@@ -121,33 +121,11 @@ impl RaSvnSession {
 
             for _rev in options.start_rev..=options.end_rev {
                 let item = conn.read_item().await?;
-                let SvnItem::List(parts) = item else {
-                    return Err(SvnError::Protocol("expected revprops tuple".into()));
-                };
-                if parts.is_empty() {
-                    return Err(SvnError::Protocol("empty revprops tuple".into()));
-                }
-
-                let word = parts[0]
-                    .as_word()
-                    .ok_or_else(|| SvnError::Protocol("revprops tuple word not a word".into()))?;
-                let props_item = parts
-                    .get(1)
-                    .cloned()
-                    .unwrap_or_else(|| SvnItem::List(Vec::new()));
-                let props_list = props_item.as_list().unwrap_or_default();
-
-                match word.as_str() {
-                    "revprops" => {
-                        let props = parse_proplist(&props_item)?;
+                match parse_replay_range_item(item)? {
+                    ReplayRangeItem::RevProps(props) => {
                         handler.on_event(EditorEvent::RevProps { props })?;
                     }
-                    "failure" => return Err(parse_failure(&props_list)),
-                    other => {
-                        return Err(SvnError::Protocol(format!(
-                            "expected revprops, found '{other}'"
-                        )));
-                    }
+                    ReplayRangeItem::Failure(err) => return Err(err),
                 }
 
                 let status = drive_editor(conn, Some(handler), true).await?;
@@ -193,33 +171,11 @@ impl RaSvnSession {
 
             for _rev in options.start_rev..=options.end_rev {
                 let item = conn.read_item().await?;
-                let SvnItem::List(parts) = item else {
-                    return Err(SvnError::Protocol("expected revprops tuple".into()));
-                };
-                if parts.is_empty() {
-                    return Err(SvnError::Protocol("empty revprops tuple".into()));
-                }
-
-                let word = parts[0]
-                    .as_word()
-                    .ok_or_else(|| SvnError::Protocol("revprops tuple word not a word".into()))?;
-                let props_item = parts
-                    .get(1)
-                    .cloned()
-                    .unwrap_or_else(|| SvnItem::List(Vec::new()));
-                let props_list = props_item.as_list().unwrap_or_default();
-
-                match word.as_str() {
-                    "revprops" => {
-                        let props = parse_proplist(&props_item)?;
+                match parse_replay_range_item(item)? {
+                    ReplayRangeItem::RevProps(props) => {
                         handler.on_event(EditorEvent::RevProps { props }).await?;
                     }
-                    "failure" => return Err(parse_failure(&props_list)),
-                    other => {
-                        return Err(SvnError::Protocol(format!(
-                            "expected revprops, found '{other}'"
-                        )));
-                    }
+                    ReplayRangeItem::Failure(err) => return Err(err),
                 }
 
                 let status = drive_editor_async(conn, Some(handler), true).await?;
@@ -237,5 +193,37 @@ impl RaSvnSession {
             self.conn = None;
         }
         result
+    }
+}
+
+enum ReplayRangeItem {
+    RevProps(PropertyList),
+    Failure(SvnError),
+}
+
+fn parse_replay_range_item(item: SvnItem) -> Result<ReplayRangeItem, SvnError> {
+    let SvnItem::List(parts) = item else {
+        return Err(SvnError::Protocol("expected revprops tuple".into()));
+    };
+    if parts.len() != 2 {
+        return Err(SvnError::Protocol(
+            "replay-range item must contain kind and payload".into(),
+        ));
+    }
+
+    let word = parts[0]
+        .as_word()
+        .ok_or_else(|| SvnError::Protocol("revprops tuple word not a word".into()))?;
+    match word.as_str() {
+        "revprops" => Ok(ReplayRangeItem::RevProps(parse_proplist(&parts[1])?)),
+        "failure" => {
+            let errors = parts[1]
+                .as_list()
+                .ok_or_else(|| SvnError::Protocol("replay-range failure not a list".into()))?;
+            Ok(ReplayRangeItem::Failure(parse_failure(&errors)))
+        }
+        other => Err(SvnError::Protocol(format!(
+            "expected revprops, found '{other}'"
+        ))),
     }
 }

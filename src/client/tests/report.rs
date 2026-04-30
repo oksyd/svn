@@ -614,6 +614,57 @@ fn replay_range_emits_revprops_and_finish_replay() {
 }
 
 #[test]
+fn replay_range_rejects_missing_revprops_payload() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        struct Collector;
+
+        impl EditorEventHandler for Collector {
+            fn on_event(&mut self, _event: EditorEvent) -> Result<(), SvnError> {
+                Ok(())
+            }
+        }
+
+        let expected_replay_range = SvnItem::List(vec![
+            SvnItem::Word("replay-range".to_string()),
+            SvnItem::List(vec![
+                SvnItem::Number(1),
+                SvnItem::Number(1),
+                SvnItem::Number(0),
+                SvnItem::Bool(true),
+            ]),
+        ]);
+
+        let server_task = tokio::spawn(async move {
+            assert_eq!(
+                read_line(&mut server).await,
+                encode_line(&expected_replay_range)
+            );
+            write_item_line(&mut server, &auth_request("realm")).await;
+            write_item_line(
+                &mut server,
+                &SvnItem::List(vec![SvnItem::Word("revprops".to_string())]),
+            )
+            .await;
+        });
+
+        let mut handler = Collector;
+        let options = ReplayRangeOptions::new(1, 1);
+        let err = session
+            .replay_range(&options, &mut handler)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SvnError::Protocol(msg) if msg == "replay-range item must contain kind and payload"
+        ));
+
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
 fn replay_sends_command_and_drives_editor() {
     run_async(async {
         let (mut session, mut server) = connected_session().await;

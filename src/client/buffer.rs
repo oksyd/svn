@@ -24,7 +24,9 @@ impl AsyncWrite for LimitedVecWriter {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        let next = (self.buf.len() as u64).saturating_add(buf.len() as u64);
+        let Some(next) = (self.buf.len() as u64).checked_add(buf.len() as u64) else {
+            return Poll::Ready(Err(std::io::Error::other("buffer length overflow")));
+        };
         if next > self.max_bytes {
             return Poll::Ready(Err(std::io::Error::other(format!(
                 "buffer exceeds limit {}",

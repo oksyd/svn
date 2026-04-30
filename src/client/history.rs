@@ -12,7 +12,11 @@ impl RaSvnSession {
         &mut self,
         options: &LogOptions,
     ) -> Result<Vec<LogEntry>, SvnError> {
-        let target_paths = options.target_paths.clone();
+        let target_paths = options
+            .target_paths
+            .iter()
+            .map(|path| validate_rel_dir_path(path))
+            .collect::<Result<Vec<_>, _>>()?;
         let start_rev = options.start_rev;
         let end_rev = options.end_rev;
         let changed_paths = options.changed_paths;
@@ -142,7 +146,11 @@ impl RaSvnSession {
     where
         F: FnMut(LogEntry) -> Result<(), SvnError> + Send,
     {
-        let target_paths = options.target_paths.clone();
+        let target_paths = options
+            .target_paths
+            .iter()
+            .map(|path| validate_rel_dir_path(path))
+            .collect::<Result<Vec<_>, _>>()?;
         let start_rev = options.start_rev;
         let end_rev = options.end_rev;
         let changed_paths = options.changed_paths;

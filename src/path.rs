@@ -3,7 +3,7 @@ use crate::SvnError;
 use std::borrow::Cow;
 
 fn canonicalize_rel_path(path: &str, allow_empty: bool) -> Result<Cow<'_, str>, SvnError> {
-    let raw = path.trim();
+    let raw = path;
 
     #[cfg(windows)]
     if raw.starts_with("\\\\") {
@@ -87,7 +87,10 @@ mod tests {
 
     #[test]
     fn validate_rel_path_rejects_empty_path() {
-        let err = validate_rel_path("  / ").unwrap_err();
+        let err = validate_rel_path("").unwrap_err();
+        assert!(matches!(err, SvnError::InvalidPath(_)));
+
+        let err = validate_rel_path("/").unwrap_err();
         assert!(matches!(err, SvnError::InvalidPath(_)));
     }
 
@@ -119,6 +122,12 @@ mod tests {
             validate_rel_path("trunk\\\\sub\\\\.\\\\a.zip").unwrap(),
             "trunk/sub/a.zip"
         );
+    }
+
+    #[test]
+    fn validate_rel_path_preserves_boundary_spaces() {
+        assert_eq!(validate_rel_path(" trunk/a.zip ").unwrap(), " trunk/a.zip ");
+        assert_eq!(validate_rel_dir_path(" trunk/dir ").unwrap(), " trunk/dir ");
     }
 
     #[test]

@@ -27,13 +27,9 @@ fn default_ssh_username() -> Option<String> {
 }
 
 fn url_username(url: &SvnUrl) -> Option<String> {
-    let rest = url.url.strip_prefix("svn+ssh://")?;
-    let authority = rest
-        .split_once('/')
-        .map(|(authority, _)| authority)
-        .unwrap_or(rest);
-    let (user, _) = authority.rsplit_once('@')?;
-    (!user.trim().is_empty()).then(|| user.to_string())
+    url.username()
+        .filter(|username| !username.trim().is_empty())
+        .map(ToString::to_string)
 }
 
 pub(super) fn resolve_ssh_settings(

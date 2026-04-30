@@ -16,16 +16,10 @@ impl RaSvnConnection {
         let maxver = params[1]
             .as_u64()
             .ok_or_else(|| SvnError::Protocol("invalid greeting maxver".into()))?;
-        let caps: Vec<String> = params
+        let caps = params
             .get(3)
-            .and_then(|i| i.as_list())
-            .map(|server_caps| {
-                server_caps
-                    .into_iter()
-                    .filter_map(|c| c.as_word())
-                    .collect()
-            })
-            .unwrap_or_default();
+            .ok_or_else(|| SvnError::Protocol("greeting caps missing".into()))
+            .and_then(|item| parse_word_list(item, "greeting caps"))?;
         self.server_caps = caps.clone();
         debug!(minver, maxver, caps = ?caps, "received server greeting");
         if !(minver <= 2 && 2 <= maxver) {
