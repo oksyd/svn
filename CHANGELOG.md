@@ -1,3 +1,18 @@
+## [0.1.9] - 2026-04-30
+
+### 🐛 Bug Fixes
+
+- Harden svn protocol and filesystem edge cases
+- Harden SVN protocol parsing and export safety
+
+### ⚙️ Miscellaneous Tasks
+
+- Update justfile
+## [0.1.8] - 2026-04-22
+
+### ⚙️ Miscellaneous Tasks
+
+- Release svn version 0.1.8
 ## [0.1.7] - 2026-03-31
 
 ### 🚜 Refactor
