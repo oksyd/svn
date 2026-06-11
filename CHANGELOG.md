@@ -1,3 +1,13 @@
+## [0.1.11] - 2026-06-11
+
+### 🚀 Features
+
+- *(commit)* Add high-level builder operations
+## [0.1.10] - 2026-04-30
+
+### ⚙️ Miscellaneous Tasks
+
+- Release svn version 0.1.10
 ## [0.1.9] - 2026-04-30
 
 ### 🐛 Bug Fixes
