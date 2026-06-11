@@ -17,12 +17,29 @@ use svn::{
     SvndiffMode, UnlockOptions,
 };
 
-fn run_async<T>(f: impl std::future::Future<Output = T>) -> T {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(f)
+fn run_async<T, F, Fut>(f: F) -> T
+where
+    T: Send + 'static,
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    // Full debug interop futures can exceed libtest's default per-test stack.
+    let handle = std::thread::Builder::new()
+        .name("svn-interop-runtime".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(f())
+        })
+        .unwrap();
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 fn interop_enabled() -> bool {
@@ -249,7 +266,7 @@ fn interop_svnserve_readonly_smoke() {
         return;
     }
 
-    run_async(async {
+    run_async(|| async {
         let mut fixture = start_fixture();
         fixture.wait_ready().await;
 
@@ -278,7 +295,7 @@ fn interop_svnserve_write_lock_unlock_and_commit_smoke() {
         return;
     }
 
-    run_async(async {
+    run_async(|| async {
         let mut fixture = start_fixture();
         fixture.wait_ready().await;
 
@@ -394,7 +411,7 @@ fn interop_svnserve_commit_builder_operations() {
         return;
     }
 
-    run_async(async {
+    run_async(|| async {
         let mut fixture = start_fixture();
         fixture.wait_ready().await;
 
