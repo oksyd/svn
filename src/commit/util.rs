@@ -16,6 +16,29 @@ pub enum SvndiffMode {
     V2,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FileContentMode {
+    AddOrReplace,
+    Add,
+    Replace,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DirCreateMode {
+    Ensure,
+    Add,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CopyKind {
+    Any,
+    File,
+    Dir,
+}
+
 #[derive(Default)]
 pub(super) struct TokenGen {
     next_dir: u64,

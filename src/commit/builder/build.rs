@@ -50,7 +50,11 @@ impl CommitBuilder {
 
         for change in &self.changes {
             match change {
-                Change::PutFile { path, contents } => {
+                Change::PutFile {
+                    path,
+                    contents,
+                    mode,
+                } => {
                     let path = validate_rel_path(path)?;
                     if delete_paths.contains(&path) {
                         return Err(SvnError::Protocol(format!(
@@ -63,9 +67,12 @@ impl CommitBuilder {
                             "commit builder has multiple content actions for the same file".into(),
                         ));
                     }
-                    op.action = Some(FileAction::Put(contents.clone()));
+                    op.action = Some(FileAction::Put {
+                        contents: contents.clone(),
+                        mode: *mode,
+                    });
                 }
-                Change::MkdirP { path } => {
+                Change::MkdirP { path, mode } => {
                     let path = validate_rel_dir_path(path)?;
                     if !path.is_empty() && delete_paths.contains(&path) {
                         return Err(SvnError::Protocol(format!(
@@ -78,7 +85,31 @@ impl CommitBuilder {
                             "cannot combine mkdir-p with copy".into(),
                         ));
                     }
-                    op.action = Some(DirAction::Mkdir);
+                    if matches!(
+                        (op.action.as_ref(), mode),
+                        (
+                            Some(DirAction::Mkdir {
+                                mode: DirCreateMode::Add,
+                            }),
+                            DirCreateMode::Add
+                        )
+                    ) {
+                        return Err(SvnError::Protocol(
+                            "commit builder has multiple add-dir actions for the same directory"
+                                .into(),
+                        ));
+                    }
+                    let mode = match (op.action.as_ref(), mode) {
+                        (
+                            Some(DirAction::Mkdir {
+                                mode: DirCreateMode::Add,
+                            }),
+                            _,
+                        )
+                        | (_, DirCreateMode::Add) => DirCreateMode::Add,
+                        _ => DirCreateMode::Ensure,
+                    };
+                    op.action = Some(DirAction::Mkdir { mode });
                 }
                 Change::Delete { path } => {
                     let path = validate_rel_path(path)?;
@@ -88,6 +119,7 @@ impl CommitBuilder {
                     from_path,
                     from_rev,
                     to_path,
+                    kind,
                 } => {
                     let from_path = validate_rel_path(from_path)?;
                     let to_path = validate_rel_path(to_path)?;
@@ -95,6 +127,7 @@ impl CommitBuilder {
                         from_path,
                         from_rev: *from_rev,
                         to_path,
+                        kind: *kind,
                     });
                 }
                 Change::FileProp { path, name, value } => {
@@ -138,6 +171,12 @@ impl CommitBuilder {
             let kind = session.check_path(&copy.from_path, Some(from_rev)).await?;
             match kind {
                 NodeKind::File => {
+                    if copy.kind == CopyKind::Dir {
+                        return Err(SvnError::Protocol(format!(
+                            "copy-dir source is not a directory at {}@{from_rev}",
+                            copy.from_path
+                        )));
+                    }
                     let op = file_ops.entry(copy.to_path).or_default();
                     if op.action.is_some() {
                         return Err(SvnError::Protocol(
@@ -150,8 +189,14 @@ impl CommitBuilder {
                     });
                 }
                 NodeKind::Dir => {
+                    if copy.kind == CopyKind::File {
+                        return Err(SvnError::Protocol(format!(
+                            "copy-file source is not a file at {}@{from_rev}",
+                            copy.from_path
+                        )));
+                    }
                     let op = dir_ops.entry(copy.to_path).or_default();
-                    if matches!(op.action.as_ref(), Some(DirAction::Mkdir)) {
+                    if matches!(op.action.as_ref(), Some(DirAction::Mkdir { .. })) {
                         return Err(SvnError::Protocol(
                             "cannot combine copy with mkdir-p".into(),
                         ));
@@ -260,6 +305,16 @@ impl CommitBuilder {
                             "copy destination directory already exists at {dir}"
                         )));
                     }
+                    if matches!(
+                        dir_ops.get(&dir).and_then(|op| op.action.as_ref()),
+                        Some(DirAction::Mkdir {
+                            mode: DirCreateMode::Add,
+                        })
+                    ) {
+                        return Err(SvnError::Protocol(format!(
+                            "add-dir target already exists at {dir}"
+                        )));
+                    }
                     dir_plans.insert(dir, DirPlanKind::Open);
                 }
                 NodeKind::None => {
@@ -296,6 +351,22 @@ impl CommitBuilder {
                 None if !exists => {
                     return Err(SvnError::Protocol(format!(
                         "cannot set file properties on a missing file at {path}"
+                    )));
+                }
+                Some(FileAction::Put {
+                    mode: FileContentMode::Add,
+                    ..
+                }) if exists => {
+                    return Err(SvnError::Protocol(format!(
+                        "add-file target already exists at {path}"
+                    )));
+                }
+                Some(FileAction::Put {
+                    mode: FileContentMode::Replace,
+                    ..
+                }) if !exists => {
+                    return Err(SvnError::Protocol(format!(
+                        "replace-file target does not exist at {path}"
                     )));
                 }
                 Some(FileAction::Copy { .. }) if exists => {
@@ -434,7 +505,7 @@ impl CommitBuilder {
                                 copy_from: Some((from_path.clone(), *from_rev)),
                             });
                         }
-                        Some(FileAction::Put(_)) | None => {
+                        Some(FileAction::Put { .. }) | None => {
                             if file.exists {
                                 commands.push(EditorCommand::OpenFile {
                                     path: file.path.clone(),
@@ -453,7 +524,7 @@ impl CommitBuilder {
                         }
                     }
 
-                    if let Some(FileAction::Put(contents)) = file.action.as_ref() {
+                    if let Some(FileAction::Put { contents, .. }) = file.action.as_ref() {
                         commands.push(EditorCommand::ApplyTextDelta {
                             file_token: file_token.clone(),
                             base_checksum: None,

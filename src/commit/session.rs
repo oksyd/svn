@@ -1,4 +1,4 @@
-use crate::{CommitInfo, CommitOptions, RaSvnSession, SvnError};
+use crate::{CommitInfo, CommitOptions, RaSvnClient, RaSvnSession, SvnError};
 
 use super::{CommitBuilder, CommitStreamBuilder};
 
@@ -33,5 +33,27 @@ impl RaSvnSession {
         builder: CommitStreamBuilder,
     ) -> Result<CommitInfo, SvnError> {
         builder.commit(self, options).await
+    }
+}
+
+impl RaSvnClient {
+    /// Opens a session and runs `commit` from a high-level [`CommitBuilder`].
+    pub async fn commit_with_builder(
+        &self,
+        options: &CommitOptions,
+        builder: &CommitBuilder,
+    ) -> Result<CommitInfo, SvnError> {
+        let mut session = self.open_session().await?;
+        session.commit_with_builder(options, builder).await
+    }
+
+    /// Opens a session and runs `commit` from a streaming [`CommitStreamBuilder`].
+    pub async fn commit_with_stream_builder(
+        &self,
+        options: &CommitOptions,
+        builder: CommitStreamBuilder,
+    ) -> Result<CommitInfo, SvnError> {
+        let mut session = self.open_session().await?;
+        session.commit_with_stream_builder(options, builder).await
     }
 }

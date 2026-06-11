@@ -2,7 +2,7 @@
 name = "svn"
 version = "0.1.10"
 edition = "2024"
-rust-version = "1.95.0"
+rust-version = "1.96.0"
 license = "MIT"
 description = "Async Rust SVN client for Subversion svn://, svn+ssh://, and ra_svn workflows."
 readme = "README.md"

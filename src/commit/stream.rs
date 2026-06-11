@@ -8,7 +8,9 @@ use crate::{
     Capability, CommitInfo, CommitOptions, EditorCommand, NodeKind, RaSvnSession, SvnError,
 };
 
-use super::util::{SvndiffMode, TokenGen, dir_prefixes, parent_dir, select_svndiff_version};
+use super::util::{
+    FileContentMode, SvndiffMode, TokenGen, dir_prefixes, parent_dir, select_svndiff_version,
+};
 
 /// High-level commit builder that streams file contents from an [`AsyncRead`].
 ///
@@ -25,6 +27,7 @@ pub struct CommitStreamBuilder {
 struct StreamFileChange {
     path: String,
     reader: Box<dyn AsyncRead + Unpin>,
+    mode: FileContentMode,
 }
 
 impl CommitStreamBuilder {
@@ -69,16 +72,45 @@ impl CommitStreamBuilder {
         self
     }
 
-    /// Adds or replaces the full contents of `path` from `reader`.
-    pub fn put_file_reader<R>(mut self, path: impl Into<String>, reader: R) -> Self
+    fn put_file_reader_with_mode<R>(
+        mut self,
+        path: impl Into<String>,
+        reader: R,
+        mode: FileContentMode,
+    ) -> Self
     where
         R: AsyncRead + Unpin + 'static,
     {
         self.files.push(StreamFileChange {
             path: path.into(),
             reader: Box::new(reader),
+            mode,
         });
         self
+    }
+
+    /// Adds or replaces the full contents of `path` from `reader`.
+    pub fn put_file_reader<R>(self, path: impl Into<String>, reader: R) -> Self
+    where
+        R: AsyncRead + Unpin + 'static,
+    {
+        self.put_file_reader_with_mode(path, reader, FileContentMode::AddOrReplace)
+    }
+
+    /// Adds a new file from `reader` and fails if `path` already exists at `base_rev`.
+    pub fn add_file_reader<R>(self, path: impl Into<String>, reader: R) -> Self
+    where
+        R: AsyncRead + Unpin + 'static,
+    {
+        self.put_file_reader_with_mode(path, reader, FileContentMode::Add)
+    }
+
+    /// Replaces an existing file from `reader` and fails if `path` is missing at `base_rev`.
+    pub fn replace_file_reader<R>(self, path: impl Into<String>, reader: R) -> Self
+    where
+        R: AsyncRead + Unpin + 'static,
+    {
+        self.put_file_reader_with_mode(path, reader, FileContentMode::Replace)
     }
 
     /// Commits the streamed edit to `session`.
@@ -132,6 +164,7 @@ impl CommitStreamBuilder {
             input_files.push(StreamFileChange {
                 path,
                 reader: file.reader,
+                mode: file.mode,
             });
         }
 
@@ -152,9 +185,24 @@ impl CommitStreamBuilder {
                     )));
                 }
             }
+            let exists = kind == NodeKind::File;
+            match file.mode {
+                FileContentMode::Add if exists => {
+                    return Err(SvnError::Protocol(format!(
+                        "add-file target already exists at {path}"
+                    )));
+                }
+                FileContentMode::Replace if !exists => {
+                    return Err(SvnError::Protocol(format!(
+                        "replace-file target does not exist at {path}"
+                    )));
+                }
+                FileContentMode::AddOrReplace | FileContentMode::Add | FileContentMode::Replace => {
+                }
+            }
             files.push(StreamResolvedFile {
                 path,
-                exists: kind == NodeKind::File,
+                exists,
                 reader: file.reader,
             });
         }

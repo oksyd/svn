@@ -1,3 +1,5 @@
+use super::{DirCreateMode, FileContentMode};
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct FileOp {
     pub(super) action: Option<FileAction>,
@@ -6,8 +8,14 @@ pub(super) struct FileOp {
 
 #[derive(Clone, Debug)]
 pub(super) enum FileAction {
-    Put(Vec<u8>),
-    Copy { from_path: String, from_rev: u64 },
+    Put {
+        contents: Vec<u8>,
+        mode: FileContentMode,
+    },
+    Copy {
+        from_path: String,
+        from_rev: u64,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -18,7 +26,7 @@ pub(super) struct DirOp {
 
 #[derive(Clone, Debug)]
 pub(super) enum DirAction {
-    Mkdir,
+    Mkdir { mode: DirCreateMode },
     Copy { from_path: String, from_rev: u64 },
 }
 
@@ -33,6 +41,7 @@ pub(super) struct CopyOp {
     pub(super) from_path: String,
     pub(super) from_rev: Option<u64>,
     pub(super) to_path: String,
+    pub(super) kind: super::CopyKind,
 }
 
 #[derive(Clone, Debug)]

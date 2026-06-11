@@ -13,8 +13,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use svn::{
-    CommitBuilder, CommitOptions, EditorCommand, LockOptions, RaSvnClient, SvnUrl, SvndiffMode,
-    UnlockOptions,
+    CommitBuilder, CommitOptions, EditorCommand, LockOptions, NodeKind, RaSvnClient, SvnUrl,
+    SvndiffMode, UnlockOptions,
 };
 
 fn run_async<T>(f: impl std::future::Future<Output = T>) -> T {
@@ -234,6 +234,15 @@ impl tokio::io::AsyncWrite for VecWriter {
     }
 }
 
+async fn read_file(session: &mut svn::RaSvnSession, path: &str, rev: u64) -> Vec<u8> {
+    let mut out = VecWriter::new();
+    session
+        .get_file(path, rev, false, &mut out, 1024 * 1024)
+        .await
+        .unwrap();
+    out.buf
+}
+
 #[test]
 fn interop_svnserve_readonly_smoke() {
     if !interop_enabled() {
@@ -376,5 +385,103 @@ fn interop_svnserve_write_lock_unlock_and_commit_smoke() {
             .await
             .unwrap();
         assert_eq!(out.buf, b"hello from svn-rs\n");
+    });
+}
+
+#[test]
+fn interop_svnserve_commit_builder_operations() {
+    if !interop_enabled() {
+        return;
+    }
+
+    run_async(async {
+        let mut fixture = start_fixture();
+        fixture.wait_ready().await;
+
+        let url = SvnUrl::parse(&fixture.url()).unwrap();
+        let client = RaSvnClient::new(url, Some("alice".to_string()), Some("secret".to_string()));
+        let mut session = client.open_session().await.unwrap();
+
+        let base = session.get_latest_rev().await.unwrap();
+        let builder = CommitBuilder::new()
+            .with_base_rev(base)
+            .with_svndiff(SvndiffMode::Auto)
+            .add_dir("trunk/newdir")
+            .add_file("trunk/newdir/added.txt", b"added\n".to_vec())
+            .replace_file("trunk/hello.txt", b"replaced\n".to_vec())
+            .copy_file("trunk/hello.txt", "trunk/copied-hello.txt")
+            .copy_dir("trunk", "branches/trunk-copy")
+            .set_file_prop(
+                "trunk/newdir/added.txt",
+                "svn:mime-type",
+                b"text/plain".to_vec(),
+            );
+
+        let info = session
+            .commit_with_builder(&CommitOptions::new("builder add replace copy"), &builder)
+            .await
+            .unwrap();
+        assert_eq!(info.new_rev, base + 1);
+
+        assert_eq!(
+            read_file(&mut session, "trunk/hello.txt", info.new_rev).await,
+            b"replaced\n"
+        );
+        assert_eq!(
+            read_file(&mut session, "trunk/newdir/added.txt", info.new_rev).await,
+            b"added\n"
+        );
+        assert_eq!(
+            read_file(&mut session, "trunk/copied-hello.txt", info.new_rev).await,
+            b"hello\n"
+        );
+        assert_eq!(
+            read_file(&mut session, "branches/trunk-copy/hello.txt", info.new_rev).await,
+            b"hello\n"
+        );
+
+        let props = session
+            .proplist("trunk/newdir/added.txt", Some(info.new_rev))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            props.get("svn:mime-type").unwrap().as_slice(),
+            b"text/plain"
+        );
+
+        let builder = CommitBuilder::new()
+            .with_base_rev(info.new_rev)
+            .move_file("trunk/copied-hello.txt", "trunk/moved-copy.txt")
+            .move_dir("branches/trunk-copy", "branches/trunk-moved");
+
+        let info = session
+            .commit_with_builder(&CommitOptions::new("builder move paths"), &builder)
+            .await
+            .unwrap();
+        assert_eq!(info.new_rev, base + 2);
+
+        assert_eq!(
+            session
+                .check_path("trunk/copied-hello.txt", Some(info.new_rev))
+                .await
+                .unwrap(),
+            NodeKind::None
+        );
+        assert_eq!(
+            session
+                .check_path("branches/trunk-copy", Some(info.new_rev))
+                .await
+                .unwrap(),
+            NodeKind::None
+        );
+        assert_eq!(
+            read_file(&mut session, "trunk/moved-copy.txt", info.new_rev).await,
+            b"hello\n"
+        );
+        assert_eq!(
+            read_file(&mut session, "branches/trunk-moved/hello.txt", info.new_rev).await,
+            b"hello\n"
+        );
     });
 }

@@ -19,11 +19,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
+      - name: Select Rust toolchain
+        run: rustup default 1.96.0
+      - uses: actions/cache@v4
         with:
-          toolchain: 1.95.0
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: cargo-${{ runner.os }}-1.96.0-lint-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-1.96.0-
+            cargo-${{ runner.os }}-
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo doc --no-deps --all-features
@@ -36,41 +46,62 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            rust: 1.95.0
+            rust: 1.96.0
+            case: default
             cargo_args: ""
           - os: ubuntu-latest
-            rust: 1.95.0
+            rust: 1.96.0
+            case: no-default-features
             cargo_args: "--no-default-features"
           - os: ubuntu-latest
-            rust: 1.95.0
+            rust: 1.96.0
+            case: serde
             cargo_args: "--features serde"
           - os: ubuntu-latest
-            rust: 1.95.0
+            rust: 1.96.0
+            case: cyrus-sasl
             cargo_args: "--features cyrus-sasl"
           - os: ubuntu-latest
-            rust: 1.95.0
+            rust: 1.96.0
+            case: all-features
             cargo_args: "--all-features"
           - os: ubuntu-latest
             rust: stable
+            case: stable
             cargo_args: ""
           - os: windows-latest
-            rust: 1.95.0
+            rust: 1.96.0
+            case: default
             cargo_args: ""
           - os: windows-latest
-            rust: 1.95.0
+            rust: 1.96.0
+            case: all-features
             cargo_args: "--all-features"
           - os: macos-latest
-            rust: 1.95.0
+            rust: 1.96.0
+            case: default
             cargo_args: ""
           - os: macos-latest
-            rust: 1.95.0
+            rust: 1.96.0
+            case: all-features
             cargo_args: "--all-features"
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        run: rustup toolchain install ${{ matrix.rust }} --profile minimal
+      - name: Select Rust toolchain
+        run: rustup default ${{ matrix.rust }}
+      - uses: actions/cache@v4
         with:
-          toolchain: ${{ matrix.rust }}
-      - uses: Swatinem/rust-cache@v2
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: cargo-${{ runner.os }}-${{ matrix.rust }}-${{ matrix.case }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ matrix.rust }}-
+            cargo-${{ runner.os }}-
       - run: cargo test ${{ matrix.cargo_args }}
 
   interop:
@@ -78,10 +109,21 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal
+      - name: Select Rust toolchain
+        run: rustup default 1.96.0
+      - uses: actions/cache@v4
         with:
-          toolchain: 1.95.0
-      - uses: Swatinem/rust-cache@v2
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: cargo-${{ runner.os }}-1.96.0-interop-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-1.96.0-
+            cargo-${{ runner.os }}-
       - run: sudo apt-get update
       - run: sudo apt-get install -y subversion
       - run: SVN_INTEROP=1 cargo test --all-features --test interop_svnserve -- --nocapture

@@ -4,7 +4,10 @@ use crate::path::{validate_rel_dir_path, validate_rel_path};
 use crate::svndiff::{SvndiffVersion, encode_fulltext_with_options};
 use crate::{Capability, EditorCommand, NodeKind, RaSvnSession, SvnError};
 
-use super::util::{SvndiffMode, TokenGen, dir_prefixes, parent_dir, select_svndiff_version};
+use super::util::{
+    CopyKind, DirCreateMode, FileContentMode, SvndiffMode, TokenGen, dir_prefixes, parent_dir,
+    select_svndiff_version,
+};
 
 mod build;
 mod plan;
@@ -29,9 +32,11 @@ enum Change {
     PutFile {
         path: String,
         contents: Vec<u8>,
+        mode: FileContentMode,
     },
     MkdirP {
         path: String,
+        mode: DirCreateMode,
     },
     Delete {
         path: String,
@@ -40,6 +45,7 @@ enum Change {
         from_path: String,
         from_rev: Option<u64>,
         to_path: String,
+        kind: CopyKind,
     },
     FileProp {
         path: String,
@@ -95,15 +101,43 @@ impl CommitBuilder {
         self
     }
 
+    fn put_file_with_mode(
+        mut self,
+        path: impl Into<String>,
+        contents: impl Into<Vec<u8>>,
+        mode: FileContentMode,
+    ) -> Self {
+        self.changes.push(Change::PutFile {
+            path: path.into(),
+            contents: contents.into(),
+            mode,
+        });
+        self
+    }
+
     /// Adds or replaces the full contents of `path`.
     ///
     /// If the path does not exist at `base_rev`, it will be added. If it exists
     /// as a file, it will be replaced via a textdelta. Directory paths are
     /// rejected.
-    pub fn put_file(mut self, path: impl Into<String>, contents: impl Into<Vec<u8>>) -> Self {
-        self.changes.push(Change::PutFile {
+    pub fn put_file(self, path: impl Into<String>, contents: impl Into<Vec<u8>>) -> Self {
+        self.put_file_with_mode(path, contents, FileContentMode::AddOrReplace)
+    }
+
+    /// Adds a new file and fails if `path` already exists at `base_rev`.
+    pub fn add_file(self, path: impl Into<String>, contents: impl Into<Vec<u8>>) -> Self {
+        self.put_file_with_mode(path, contents, FileContentMode::Add)
+    }
+
+    /// Replaces an existing file and fails if `path` is missing at `base_rev`.
+    pub fn replace_file(self, path: impl Into<String>, contents: impl Into<Vec<u8>>) -> Self {
+        self.put_file_with_mode(path, contents, FileContentMode::Replace)
+    }
+
+    fn mkdir_with_mode(mut self, path: impl Into<String>, mode: DirCreateMode) -> Self {
+        self.changes.push(Change::MkdirP {
             path: path.into(),
-            contents: contents.into(),
+            mode,
         });
         self
     }
@@ -111,9 +145,15 @@ impl CommitBuilder {
     /// Ensures `path` exists as a directory, creating parent directories as needed.
     ///
     /// If the directory already exists at `base_rev`, this is a no-op.
-    pub fn mkdir_p(mut self, path: impl Into<String>) -> Self {
-        self.changes.push(Change::MkdirP { path: path.into() });
-        self
+    pub fn mkdir_p(self, path: impl Into<String>) -> Self {
+        self.mkdir_with_mode(path, DirCreateMode::Ensure)
+    }
+
+    /// Adds `path` as a new directory and fails if it already exists at `base_rev`.
+    ///
+    /// Missing parent directories are created as needed.
+    pub fn add_dir(self, path: impl Into<String>) -> Self {
+        self.mkdir_with_mode(path, DirCreateMode::Add)
     }
 
     /// Deletes `path` (file or directory).
@@ -122,29 +162,75 @@ impl CommitBuilder {
         self
     }
 
-    /// Copies `from_path@base_rev` to `to_path`.
-    pub fn copy(mut self, from_path: impl Into<String>, to_path: impl Into<String>) -> Self {
+    fn copy_with_kind(
+        mut self,
+        from_path: impl Into<String>,
+        from_rev: Option<u64>,
+        to_path: impl Into<String>,
+        kind: CopyKind,
+    ) -> Self {
         self.changes.push(Change::Copy {
             from_path: from_path.into(),
-            from_rev: None,
+            from_rev,
             to_path: to_path.into(),
+            kind,
         });
         self
     }
 
+    /// Copies `from_path@base_rev` to `to_path`.
+    ///
+    /// The source may be either a file or directory.
+    pub fn copy(self, from_path: impl Into<String>, to_path: impl Into<String>) -> Self {
+        self.copy_with_kind(from_path, None, to_path, CopyKind::Any)
+    }
+
     /// Copies `from_path@from_rev` to `to_path`.
     pub fn copy_from_rev(
-        mut self,
+        self,
         from_path: impl Into<String>,
         from_rev: u64,
         to_path: impl Into<String>,
     ) -> Self {
-        self.changes.push(Change::Copy {
-            from_path: from_path.into(),
-            from_rev: Some(from_rev),
-            to_path: to_path.into(),
-        });
-        self
+        self.copy_with_kind(from_path, Some(from_rev), to_path, CopyKind::Any)
+    }
+
+    /// Copies a file from `from_path@base_rev` to `to_path`.
+    ///
+    /// Fails if the source is not a file.
+    pub fn copy_file(self, from_path: impl Into<String>, to_path: impl Into<String>) -> Self {
+        self.copy_with_kind(from_path, None, to_path, CopyKind::File)
+    }
+
+    /// Copies a file from `from_path@from_rev` to `to_path`.
+    ///
+    /// Fails if the source is not a file.
+    pub fn copy_file_from_rev(
+        self,
+        from_path: impl Into<String>,
+        from_rev: u64,
+        to_path: impl Into<String>,
+    ) -> Self {
+        self.copy_with_kind(from_path, Some(from_rev), to_path, CopyKind::File)
+    }
+
+    /// Copies a directory from `from_path@base_rev` to `to_path`.
+    ///
+    /// Fails if the source is not a directory.
+    pub fn copy_dir(self, from_path: impl Into<String>, to_path: impl Into<String>) -> Self {
+        self.copy_with_kind(from_path, None, to_path, CopyKind::Dir)
+    }
+
+    /// Copies a directory from `from_path@from_rev` to `to_path`.
+    ///
+    /// Fails if the source is not a directory.
+    pub fn copy_dir_from_rev(
+        self,
+        from_path: impl Into<String>,
+        from_rev: u64,
+        to_path: impl Into<String>,
+    ) -> Self {
+        self.copy_with_kind(from_path, Some(from_rev), to_path, CopyKind::Dir)
     }
 
     /// Moves `from_path@base_rev` to `to_path`.
@@ -166,6 +252,50 @@ impl CommitBuilder {
     ) -> Self {
         let from_path = from_path.into();
         self.copy_from_rev(from_path.clone(), from_rev, to_path)
+            .delete(from_path)
+    }
+
+    /// Moves a file from `from_path@base_rev` to `to_path`.
+    ///
+    /// Fails if the source is not a file.
+    pub fn move_file(self, from_path: impl Into<String>, to_path: impl Into<String>) -> Self {
+        let from_path = from_path.into();
+        self.copy_file(from_path.clone(), to_path).delete(from_path)
+    }
+
+    /// Moves a file from `from_path@from_rev` to `to_path`.
+    ///
+    /// Fails if the source is not a file.
+    pub fn move_file_from_rev(
+        self,
+        from_path: impl Into<String>,
+        from_rev: u64,
+        to_path: impl Into<String>,
+    ) -> Self {
+        let from_path = from_path.into();
+        self.copy_file_from_rev(from_path.clone(), from_rev, to_path)
+            .delete(from_path)
+    }
+
+    /// Moves a directory from `from_path@base_rev` to `to_path`.
+    ///
+    /// Fails if the source is not a directory.
+    pub fn move_dir(self, from_path: impl Into<String>, to_path: impl Into<String>) -> Self {
+        let from_path = from_path.into();
+        self.copy_dir(from_path.clone(), to_path).delete(from_path)
+    }
+
+    /// Moves a directory from `from_path@from_rev` to `to_path`.
+    ///
+    /// Fails if the source is not a directory.
+    pub fn move_dir_from_rev(
+        self,
+        from_path: impl Into<String>,
+        from_rev: u64,
+        to_path: impl Into<String>,
+    ) -> Self {
+        let from_path = from_path.into();
+        self.copy_dir_from_rev(from_path.clone(), from_rev, to_path)
             .delete(from_path)
     }
 

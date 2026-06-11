@@ -183,6 +183,135 @@ fn commit_builder_file_prop_emits_change_file_prop() {
 }
 
 #[test]
+fn commit_builder_add_file_rejects_existing_file() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let base_rev = 8u64;
+        let server_task = tokio::spawn(async move {
+            for (path, kind) in [("trunk", "dir"), ("trunk/new.txt", "file")] {
+                let expected = SvnItem::List(vec![
+                    SvnItem::Word("check-path".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::String(path.as_bytes().to_vec()),
+                        SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                    ]),
+                ]);
+                assert_eq!(read_line(&mut server).await, encode_line(&expected));
+                write_item_line(&mut server, &auth_request("realm")).await;
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("success".to_string()),
+                        SvnItem::List(vec![SvnItem::Word(kind.to_string())]),
+                    ]),
+                )
+                .await;
+            }
+        });
+
+        let builder = crate::CommitBuilder::new()
+            .with_base_rev(base_rev)
+            .add_file("trunk/new.txt", b"hello".to_vec());
+        let err = builder
+            .build_editor_commands(&mut session)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, SvnError::Protocol(message) if message == "add-file target already exists at trunk/new.txt")
+        );
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
+fn commit_builder_replace_file_rejects_missing_file() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let base_rev = 9u64;
+        let server_task = tokio::spawn(async move {
+            for (path, kind) in [("trunk", "dir"), ("trunk/missing.txt", "none")] {
+                let expected = SvnItem::List(vec![
+                    SvnItem::Word("check-path".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::String(path.as_bytes().to_vec()),
+                        SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                    ]),
+                ]);
+                assert_eq!(read_line(&mut server).await, encode_line(&expected));
+                write_item_line(&mut server, &auth_request("realm")).await;
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("success".to_string()),
+                        SvnItem::List(vec![SvnItem::Word(kind.to_string())]),
+                    ]),
+                )
+                .await;
+            }
+        });
+
+        let builder = crate::CommitBuilder::new()
+            .with_base_rev(base_rev)
+            .replace_file("trunk/missing.txt", b"hello".to_vec());
+        let err = builder
+            .build_editor_commands(&mut session)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, SvnError::Protocol(message) if message == "replace-file target does not exist at trunk/missing.txt")
+        );
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
+fn commit_builder_add_dir_rejects_existing_dir() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let base_rev = 12u64;
+        let server_task = tokio::spawn(async move {
+            for (path, kind) in [("trunk", "dir"), ("trunk/newdir", "dir")] {
+                let expected = SvnItem::List(vec![
+                    SvnItem::Word("check-path".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::String(path.as_bytes().to_vec()),
+                        SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                    ]),
+                ]);
+                assert_eq!(read_line(&mut server).await, encode_line(&expected));
+                write_item_line(&mut server, &auth_request("realm")).await;
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("success".to_string()),
+                        SvnItem::List(vec![SvnItem::Word(kind.to_string())]),
+                    ]),
+                )
+                .await;
+            }
+        });
+
+        let builder = crate::CommitBuilder::new()
+            .with_base_rev(base_rev)
+            .add_dir("trunk/newdir");
+        let err = builder
+            .build_editor_commands(&mut session)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, SvnError::Protocol(message) if message == "add-dir target already exists at trunk/newdir")
+        );
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
 fn commit_builder_copy_file_emits_add_file_copy_from() {
     run_async(async {
         let (mut session, mut server) = connected_session().await;
@@ -227,6 +356,136 @@ fn commit_builder_copy_file_emits_add_file_copy_from() {
                     && matches!(copy_from.as_ref(), Some((p, r)) if p == "trunk/a.txt" && *r == base_rev)
         )));
 
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
+fn commit_builder_copy_dir_emits_add_dir_copy_from() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let base_rev = 4u64;
+        let server_task = tokio::spawn(async move {
+            for (path, kind) in [
+                ("trunk/srcdir", "dir"),
+                ("branches", "none"),
+                ("branches/copied", "none"),
+            ] {
+                let expected = SvnItem::List(vec![
+                    SvnItem::Word("check-path".to_string()),
+                    SvnItem::List(vec![
+                        SvnItem::String(path.as_bytes().to_vec()),
+                        SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                    ]),
+                ]);
+                assert_eq!(read_line(&mut server).await, encode_line(&expected));
+                write_item_line(&mut server, &auth_request("realm")).await;
+                write_item_line(
+                    &mut server,
+                    &SvnItem::List(vec![
+                        SvnItem::Word("success".to_string()),
+                        SvnItem::List(vec![SvnItem::Word(kind.to_string())]),
+                    ]),
+                )
+                .await;
+            }
+        });
+
+        let builder = crate::CommitBuilder::new()
+            .with_base_rev(base_rev)
+            .copy_dir("trunk/srcdir", "branches/copied");
+        let commands = builder.build_editor_commands(&mut session).await.unwrap();
+
+        assert!(commands.iter().any(|c| matches!(
+            c,
+            EditorCommand::AddDir { path, copy_from, .. }
+                if path == "branches/copied"
+                    && matches!(copy_from.as_ref(), Some((p, r)) if p == "trunk/srcdir" && *r == base_rev)
+        )));
+
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
+fn commit_builder_copy_file_rejects_dir_source() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let base_rev = 4u64;
+        let server_task = tokio::spawn(async move {
+            let expected = SvnItem::List(vec![
+                SvnItem::Word("check-path".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::String(b"trunk/srcdir".to_vec()),
+                    SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                ]),
+            ]);
+            assert_eq!(read_line(&mut server).await, encode_line(&expected));
+            write_item_line(&mut server, &auth_request("realm")).await;
+            write_item_line(
+                &mut server,
+                &SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(vec![SvnItem::Word("dir".to_string())]),
+                ]),
+            )
+            .await;
+        });
+
+        let builder = crate::CommitBuilder::new()
+            .with_base_rev(base_rev)
+            .copy_file("trunk/srcdir", "branches/copied");
+        let err = builder
+            .build_editor_commands(&mut session)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, SvnError::Protocol(message) if message == "copy-file source is not a file at trunk/srcdir@4")
+        );
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
+fn commit_builder_copy_dir_rejects_file_source() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let base_rev = 4u64;
+        let server_task = tokio::spawn(async move {
+            let expected = SvnItem::List(vec![
+                SvnItem::Word("check-path".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::String(b"trunk/a.txt".to_vec()),
+                    SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                ]),
+            ]);
+            assert_eq!(read_line(&mut server).await, encode_line(&expected));
+            write_item_line(&mut server, &auth_request("realm")).await;
+            write_item_line(
+                &mut server,
+                &SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(vec![SvnItem::Word("file".to_string())]),
+                ]),
+            )
+            .await;
+        });
+
+        let builder = crate::CommitBuilder::new()
+            .with_base_rev(base_rev)
+            .copy_dir("trunk/a.txt", "branches/copied");
+        let err = builder
+            .build_editor_commands(&mut session)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, SvnError::Protocol(message) if message == "copy-dir source is not a directory at trunk/a.txt@4")
+        );
         server_task.await.unwrap();
     });
 }
@@ -440,6 +699,91 @@ fn commit_stream_builder_rejects_duplicate_paths_before_io() {
             .unwrap_err();
 
         assert!(matches!(err, SvnError::Protocol(message) if message.contains("multiple readers")));
+    });
+}
+
+#[test]
+fn commit_stream_builder_add_file_rejects_existing_file_before_commit() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let base_rev = 4u64;
+        let server_task = tokio::spawn(async move {
+            let expected_check = SvnItem::List(vec![
+                SvnItem::Word("check-path".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::String(b"trunk/existing.txt".to_vec()),
+                    SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                ]),
+            ]);
+            assert_eq!(read_line(&mut server).await, encode_line(&expected_check));
+            write_item_line(&mut server, &auth_request("realm")).await;
+            write_item_line(
+                &mut server,
+                &SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(vec![SvnItem::Word("file".to_string())]),
+                ]),
+            )
+            .await;
+        });
+
+        let builder = crate::CommitStreamBuilder::new()
+            .with_base_rev(base_rev)
+            .add_file_reader(
+                "trunk/existing.txt",
+                std::io::Cursor::new(b"hello".to_vec()),
+            );
+        let err = builder
+            .commit(&mut session, &CommitOptions::new("msg"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, SvnError::Protocol(message) if message == "add-file target already exists at trunk/existing.txt")
+        );
+        server_task.await.unwrap();
+    });
+}
+
+#[test]
+fn commit_stream_builder_replace_file_rejects_missing_file_before_commit() {
+    run_async(async {
+        let (mut session, mut server) = connected_session().await;
+
+        let base_rev = 4u64;
+        let server_task = tokio::spawn(async move {
+            let expected_check = SvnItem::List(vec![
+                SvnItem::Word("check-path".to_string()),
+                SvnItem::List(vec![
+                    SvnItem::String(b"trunk/missing.txt".to_vec()),
+                    SvnItem::List(vec![SvnItem::Number(base_rev)]),
+                ]),
+            ]);
+            assert_eq!(read_line(&mut server).await, encode_line(&expected_check));
+            write_item_line(&mut server, &auth_request("realm")).await;
+            write_item_line(
+                &mut server,
+                &SvnItem::List(vec![
+                    SvnItem::Word("success".to_string()),
+                    SvnItem::List(vec![SvnItem::Word("none".to_string())]),
+                ]),
+            )
+            .await;
+        });
+
+        let builder = crate::CommitStreamBuilder::new()
+            .with_base_rev(base_rev)
+            .replace_file_reader("trunk/missing.txt", std::io::Cursor::new(b"hello".to_vec()));
+        let err = builder
+            .commit(&mut session, &CommitOptions::new("msg"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, SvnError::Protocol(message) if message == "replace-file target does not exist at trunk/missing.txt")
+        );
+        server_task.await.unwrap();
     });
 }
 
