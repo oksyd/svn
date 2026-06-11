@@ -200,6 +200,28 @@ fn send_editor_command_encodes_revision_as_optional_tuple() {
         ]);
         assert_eq!(read_line(&mut server).await, encode_line(&expected));
 
+        let cmd = EditorCommand::AddFile {
+            path: "branches/copied.txt".to_string(),
+            dir_token: "t".to_string(),
+            file_token: "f-copy".to_string(),
+            copy_from: Some(("svn://example.com:3690/repo/trunk/file.txt".to_string(), 5)),
+        };
+        send_editor_command(&mut conn, &cmd).await.unwrap();
+
+        let expected = SvnItem::List(vec![
+            SvnItem::Word("add-file".to_string()),
+            SvnItem::List(vec![
+                SvnItem::String(b"branches/copied.txt".to_vec()),
+                SvnItem::String(b"t".to_vec()),
+                SvnItem::String(b"f-copy".to_vec()),
+                SvnItem::List(vec![
+                    SvnItem::String(b"svn://example.com:3690/repo/trunk/file.txt".to_vec()),
+                    SvnItem::Number(5),
+                ]),
+            ]),
+        ]);
+        assert_eq!(read_line(&mut server).await, encode_line(&expected));
+
         let cmd = EditorCommand::OpenFile {
             path: "trunk/file.txt".to_string(),
             dir_token: "t".to_string(),

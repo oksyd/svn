@@ -21,6 +21,11 @@ impl CommitBuilder {
             Some(rev) => rev,
             None => session.get_latest_rev().await?,
         };
+        let copy_root_url = session
+            .repos_root_url()
+            .unwrap_or(session.client().base_url().url.as_str())
+            .trim_end_matches('/')
+            .to_string();
 
         let svndiff_version = match self.svndiff {
             SvndiffMode::Auto => select_svndiff_version(session),
@@ -184,7 +189,7 @@ impl CommitBuilder {
                         ));
                     }
                     op.action = Some(FileAction::Copy {
-                        from_path: copy.from_path,
+                        from_path: copy_source_url(&copy_root_url, &copy.from_path),
                         from_rev,
                     });
                 }
@@ -208,7 +213,7 @@ impl CommitBuilder {
                         ));
                     }
                     op.action = Some(DirAction::Copy {
-                        from_path: copy.from_path,
+                        from_path: copy_source_url(&copy_root_url, &copy.from_path),
                         from_rev,
                     });
                 }
@@ -587,5 +592,13 @@ impl CommitBuilder {
         commands.push(EditorCommand::CloseEdit);
 
         Ok(commands)
+    }
+}
+
+fn copy_source_url(root_url: &str, rel_path: &str) -> String {
+    if rel_path.is_empty() {
+        root_url.to_string()
+    } else {
+        format!("{root_url}/{rel_path}")
     }
 }

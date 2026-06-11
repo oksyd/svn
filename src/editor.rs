@@ -254,7 +254,7 @@ pub enum EditorCommand {
         parent_token: String,
         /// Child directory token.
         child_token: String,
-        /// Optional copy source `(path, rev)`.
+        /// Optional copy source `(url, rev)`.
         copy_from: Option<(String, u64)>,
     },
     /// Opens an existing directory.
@@ -297,7 +297,7 @@ pub enum EditorCommand {
         dir_token: String,
         /// File token.
         file_token: String,
-        /// Optional copy source `(path, rev)`.
+        /// Optional copy source `(url, rev)`.
         copy_from: Option<(String, u64)>,
     },
     /// Opens an existing file.

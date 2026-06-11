@@ -353,7 +353,10 @@ fn commit_builder_copy_file_emits_add_file_copy_from() {
             c,
             EditorCommand::AddFile { path, copy_from, .. }
                 if path == "branches/b.txt"
-                    && matches!(copy_from.as_ref(), Some((p, r)) if p == "trunk/a.txt" && *r == base_rev)
+                    && matches!(
+                        copy_from.as_ref(),
+                        Some((p, r)) if p == "svn://example.com:3690/repo/trunk/a.txt" && *r == base_rev
+                    )
         )));
 
         server_task.await.unwrap();
@@ -401,7 +404,10 @@ fn commit_builder_copy_dir_emits_add_dir_copy_from() {
             c,
             EditorCommand::AddDir { path, copy_from, .. }
                 if path == "branches/copied"
-                    && matches!(copy_from.as_ref(), Some((p, r)) if p == "trunk/srcdir" && *r == base_rev)
+                    && matches!(
+                        copy_from.as_ref(),
+                        Some((p, r)) if p == "svn://example.com:3690/repo/trunk/srcdir" && *r == base_rev
+                    )
         )));
 
         server_task.await.unwrap();

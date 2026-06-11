@@ -60,8 +60,7 @@ pub(crate) fn encode_editor_command(
             enc.string_str(child_token);
             enc.list_start();
             if let Some((copy_path, copy_rev)) = copy_from {
-                let copy_path = validate_rel_path_ref(copy_path)?;
-                enc.string_str(copy_path.as_ref());
+                enc.string_str(copy_path);
                 enc.number(*copy_rev);
             }
             enc.list_end();
@@ -128,8 +127,7 @@ pub(crate) fn encode_editor_command(
             enc.string_str(file_token);
             enc.list_start();
             if let Some((copy_path, copy_rev)) = copy_from {
-                let copy_path = validate_rel_path_ref(copy_path)?;
-                enc.string_str(copy_path.as_ref());
+                enc.string_str(copy_path);
                 enc.number(*copy_rev);
             }
             enc.list_end();
