@@ -1,8 +1,17 @@
+## [0.1.12] - 2026-06-11
+
+### 🧪 Testing
+
+- *(interop)* Prevent svnserve test stack overflow
 ## [0.1.11] - 2026-06-11
 
 ### 🚀 Features
 
 - *(commit)* Add high-level builder operations
+
+### ⚙️ Miscellaneous Tasks
+
+- Release svn version 0.1.11
 ## [0.1.10] - 2026-04-30
 
 ### ⚙️ Miscellaneous Tasks
