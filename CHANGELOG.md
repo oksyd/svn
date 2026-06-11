@@ -1,8 +1,17 @@
+## [0.1.13] - 2026-06-11
+
+### 🐛 Bug Fixes
+
+- *(commit)* Send repository URLs for copy sources
 ## [0.1.12] - 2026-06-11
 
 ### 🧪 Testing
 
 - *(interop)* Prevent svnserve test stack overflow
+
+### ⚙️ Miscellaneous Tasks
+
+- Release svn version 0.1.12
 ## [0.1.11] - 2026-06-11
 
 ### 🚀 Features
