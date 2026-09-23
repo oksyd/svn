@@ -3,6 +3,10 @@
 ### 🐛 Bug Fixes
 
 - *(commit)* Send repository URLs for copy sources
+
+### ⚙️ Miscellaneous Tasks
+
+- Release svn version 0.1.13
 ## [0.1.12] - 2026-06-11
 
 ### 🧪 Testing
