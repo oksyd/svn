@@ -3,8 +3,6 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use std::io::Write as _;
-
 use proptest::prelude::*;
 use tokio::io::AsyncWrite;
 

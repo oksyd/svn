@@ -35,15 +35,16 @@ impl client::Handler for SshClientHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh::keys::ssh_key::PublicKey,
+        server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        let server_public_key = server_public_key.public_key();
         match &self.host_key {
             SshHostKeyPolicy::AcceptAny => Ok(true),
             SshHostKeyPolicy::KnownHosts => {
                 let ok = russh::keys::check_known_hosts(
                     &self.known_hosts_host,
                     self.port,
-                    server_public_key,
+                    &server_public_key,
                 )?;
                 if ok {
                     return Ok(true);
@@ -52,7 +53,7 @@ impl client::Handler for SshClientHandler {
                     russh::keys::known_hosts::learn_known_hosts(
                         &self.known_hosts_host,
                         self.port,
-                        server_public_key,
+                        &server_public_key,
                     )?;
                     return Ok(true);
                 }
@@ -62,7 +63,7 @@ impl client::Handler for SshClientHandler {
                 let ok = russh::keys::check_known_hosts_path(
                     &self.known_hosts_host,
                     self.port,
-                    server_public_key,
+                    &server_public_key,
                     path,
                 )?;
                 if ok {
@@ -72,7 +73,7 @@ impl client::Handler for SshClientHandler {
                     russh::keys::known_hosts::learn_known_hosts_path(
                         &self.known_hosts_host,
                         self.port,
-                        server_public_key,
+                        &server_public_key,
                         path,
                     )?;
                     return Ok(true);

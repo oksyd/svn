@@ -9,11 +9,11 @@
   <a href="https://docs.rs/svn">
     <img src="https://img.shields.io/docsrs/svn?logo=rust" alt="docs.rs docs">
   </a>
-  <a href="https://github.com/lvillis/svn-rs/actions">
-    <img src="https://github.com/lvillis/svn-rs/actions/workflows/ci.yaml/badge.svg" alt="CI status">
+  <a href="https://github.com/oksyd/svn-rs/actions">
+    <img src="https://github.com/oksyd/svn-rs/actions/workflows/ci.yaml/badge.svg" alt="CI status">
   </a>
   <a href="rust-toolchain.toml">
-    <img src="https://img.shields.io/badge/MSRV-1.96.0-informational" alt="MSRV 1.96.0">
+    <img src="https://img.shields.io/badge/MSRV-1.98.1-informational" alt="MSRV 1.98.1">
   </a>
 </div>
 

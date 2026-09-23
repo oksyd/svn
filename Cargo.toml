@@ -2,13 +2,13 @@
 name = "svn"
 version = "0.1.13"
 edition = "2024"
-rust-version = "1.96.0"
-license = "MIT"
+rust-version = "1.98.1"
+license = "Apache-2.0"
 description = "Async Rust SVN client for Subversion svn://, svn+ssh://, and ra_svn workflows."
 readme = "README.md"
 documentation = "https://docs.rs/svn"
-repository = "https://github.com/lvillis/svn-rs"
-homepage = "https://github.com/lvillis/svn-rs"
+repository = "https://github.com/oksyd/svn-rs"
+homepage = "https://github.com/oksyd/svn-rs"
 keywords = ["svn", "subversion", "svnserve", "ra_svn", "async"]
 categories = ["network-programming", "asynchronous"]
 include = [
@@ -22,15 +22,35 @@ include = [
   "tests/**",
 ]
 
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
-
 [features]
 default = []
 serde = ["dep:serde"]
 cyrus-sasl = ["dep:base64", "dep:libloading"]
 ssh = ["dep:russh"]
+
+[dependencies]
+base64 = { version = "0.23.1", default-features = false, features = ["alloc"], optional = true }
+hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
+hmac = { version = "0.13.0", default-features = false }
+flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
+libloading = { version = "0.9.0", default-features = false, optional = true }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["std"] }
+md-5 = { version = "0.11.0", default-features = false }
+russh = { version = "0.63.3", default-features = false, features = ["ring", "rsa"], optional = true }
+serde = { version = "1.0.228", default-features = false, features = ["derive", "std"], optional = true }
+thiserror = { version = "2.0.18", default-features = false, features = ["std"] }
+tokio = { version = "1.52.1", default-features = false, features = ["fs", "io-util", "net", "rt", "sync", "time"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+similar = { version = "3.1.0", default-features = false, features = ["text"] }
+
+[dev-dependencies]
+criterion = "0.8.2"
+proptest = "1.11.0"
+tempfile = "3.27.0"
+
+[[bench]]
+name = "bench"
+harness = false
 
 [lints.rust]
 unsafe_code = "deny"
@@ -47,29 +67,9 @@ unwrap_used = "deny"
 [lints.rustdoc]
 broken_intra_doc_links = "deny"
 
-[dependencies]
-base64 = { version = "0.22.1", default-features = false, features = ["alloc"], optional = true }
-hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
-hmac = { version = "0.13.0", default-features = false }
-flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
-libloading = { version = "0.9.0", default-features = false, optional = true }
-lz4_flex = { version = "0.13.0", default-features = false, features = ["std"] }
-md-5 = { version = "0.11.0", default-features = false }
-russh = { version = "0.60.2", default-features = false, features = ["ring", "rsa"], optional = true }
-serde = { version = "1.0.228", default-features = false, features = ["derive", "std"], optional = true }
-thiserror = { version = "2.0.18", default-features = false, features = ["std"] }
-tokio = { version = "1.52.1", default-features = false, features = ["fs", "io-util", "net", "rt", "sync", "time"] }
-tracing = { version = "0.1.44", default-features = false, features = ["std"] }
-similar = { version = "3.1.0", default-features = false, features = ["text"] }
-
-[dev-dependencies]
-criterion = "0.8.2"
-proptest = "1.11.0"
-tempfile = "3.27.0"
-
-[[bench]]
-name = "bench"
-harness = false
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [package.metadata.release]
 tag-prefix = ""
