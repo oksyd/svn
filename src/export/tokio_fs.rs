@@ -1,10 +1,9 @@
 #[cfg(unix)]
 use super::shared::apply_executable_bit_async;
 use super::shared::{
-    ExportState, copy_dir_missing_recursive_async, copy_file_no_symlink_async,
-    create_dir_all_no_symlink_async, create_empty_file_no_symlink_async,
-    dir_exists_no_symlink_async, ensure_no_symlink_prefix_async, file_exists_no_symlink_async,
-    is_symlink_like,
+    ExportState, copy_file_no_symlink_async, create_dir_all_no_symlink_async,
+    create_empty_file_no_symlink_async, ensure_no_symlink_prefix_async,
+    file_exists_no_symlink_async, is_symlink_like, verify_checksum_async, verify_empty_checksum,
 };
 use super::*;
 
@@ -15,7 +14,8 @@ use super::*;
 /// methods like [`crate::RaSvnSession::update_with_async_handler`].
 ///
 /// Like [`FsEditor`], it refuses writes through symlinks (or Windows reparse
-/// points) under `root`.
+/// points) under `root`. Historical directory copies return an error; file
+/// copies require a server checksum.
 #[derive(Debug)]
 pub struct TokioFsEditor {
     state: ExportState,
@@ -87,15 +87,14 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                     ..
                 } => {
                     self.state.ensure_dir_token(&parent_token)?;
+                    if copy_from.is_some() {
+                        return Err(SvnError::Protocol(
+                            "historical directory copy is unsupported by the filesystem editor"
+                                .into(),
+                        ));
+                    }
                     let dir = self.repo_path_to_fs(&path, true)?;
                     create_dir_all_no_symlink_async(self.state.root(), &dir).await?;
-                    if let Some((src_path, _src_rev)) = copy_from {
-                        let src = self.repo_path_to_fs(&src_path, true)?;
-                        ensure_no_symlink_prefix_async(self.state.root(), &src).await?;
-                        if dir_exists_no_symlink_async(self.state.root(), &src).await? {
-                            copy_dir_missing_recursive_async(&src, &dir).await?;
-                        }
-                    }
                     self.state.open_dir(child_token, dir)?;
                     Ok(())
                 }
@@ -185,7 +184,10 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                     self.state.track_file(file_token, file_path, None, false)?;
                     Ok(())
                 }
-                EditorEvent::ApplyTextDelta { file_token, .. } => {
+                EditorEvent::ApplyTextDelta {
+                    file_token,
+                    base_checksum,
+                } => {
                     let dest = self.state.file_dest(&file_token)?;
 
                     ensure_no_symlink_prefix_async(self.state.root(), &dest).await?;
@@ -201,22 +203,27 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                         Err(err) => return Err(err.into()),
                     }
 
-                    let base = match tokio::fs::File::open(&dest).await {
-                        Ok(file) => Some(file),
-                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                            if let Some(src) = self.state.file_copy_source(&file_token) {
-                                ensure_no_symlink_prefix_async(self.state.root(), src).await?;
-                                match tokio::fs::File::open(src).await {
-                                    Ok(file) => Some(file),
-                                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-                                    Err(err) => return Err(err.into()),
-                                }
-                            } else {
-                                None
-                            }
+                    let base = if self.state.file_copy_source(&file_token).is_some() {
+                        None
+                    } else {
+                        match tokio::fs::File::open(&dest).await {
+                            Ok(file) => Some(file),
+                            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                            Err(err) => return Err(err.into()),
                         }
-                        Err(err) => return Err(err.into()),
                     };
+                    if let Some(expected) = base_checksum.as_deref() {
+                        if self.state.file_copy_source(&file_token).is_some() {
+                            return Err(SvnError::Protocol(
+                                "textdelta requires historical copy base".into(),
+                            ));
+                        }
+                        if base.is_some() {
+                            verify_checksum_async(&dest, expected).await?;
+                        } else {
+                            verify_empty_checksum(expected)?;
+                        }
+                    }
                     let applier = TextDeltaApplierFile::new(base).await?;
 
                     let tmp = self.new_tmp_path(&dest, &file_token);
@@ -279,8 +286,15 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                     self.state.ensure_dir_token(&dir_token)?;
                     Ok(())
                 }
-                EditorEvent::CloseFile { file_token, .. } => {
+                EditorEvent::CloseFile {
+                    file_token,
+                    text_checksum,
+                } => {
                     let dest = self.state.file_dest_if_known(&file_token);
+                    if self.state.file_copy_source(&file_token).is_some() && text_checksum.is_none()
+                    {
+                        return Err(SvnError::Protocol("file copy requires checksum".into()));
+                    }
                     let pending = self.pending_files.remove(&file_token);
 
                     if let Some(mut pending) = pending {
@@ -295,6 +309,13 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                         pending.out.flush().await?;
                         drop(pending.out);
 
+                        if let Some(expected) = text_checksum.as_deref()
+                            && let Err(err) = verify_checksum_async(&pending.tmp, expected).await
+                        {
+                            let _ = tokio::fs::remove_file(&pending.tmp).await;
+                            return Err(err);
+                        }
+
                         if file_exists_no_symlink_async(self.state.root(), &pending.dest).await? {
                             tokio::fs::remove_file(&pending.dest).await?;
                         }
@@ -307,6 +328,13 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                     } else if let Some(dest) = dest {
                         let added = self.state.file_was_added(&file_token);
                         let copy_source = self.state.file_copy_source(&file_token).cloned();
+                        if let Some(src) = copy_source.as_ref() {
+                            let expected = text_checksum.as_deref().ok_or_else(|| {
+                                SvnError::Protocol("file copy requires checksum".into())
+                            })?;
+                            ensure_no_symlink_prefix_async(self.state.root(), src).await?;
+                            verify_checksum_async(src, expected).await?;
+                        }
                         let copied = match copy_source.as_ref() {
                             Some(src) => {
                                 copy_file_no_symlink_async(self.state.root(), src, &dest).await?
@@ -316,6 +344,9 @@ impl AsyncEditorEventHandler for TokioFsEditor {
 
                         if !copied {
                             if added && copy_source.is_none() {
+                                if let Some(expected) = text_checksum.as_deref() {
+                                    verify_empty_checksum(expected)?;
+                                }
                                 create_empty_file_no_symlink_async(self.state.root(), &dest)
                                     .await?;
                             } else if !file_exists_no_symlink_async(self.state.root(), &dest)
@@ -325,6 +356,10 @@ impl AsyncEditorEventHandler for TokioFsEditor {
                                     "close-file for missing file without textdelta".into(),
                                 ));
                             }
+                        }
+
+                        if let Some(expected) = text_checksum.as_deref() {
+                            verify_checksum_async(&dest, expected).await?;
                         }
 
                         #[cfg(unix)]

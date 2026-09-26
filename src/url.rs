@@ -32,12 +32,14 @@ impl SvnUrl {
     /// ```
     pub fn parse(input: &str) -> Result<Self, SvnError> {
         let input = input.trim();
-        let (scheme, rest, default_port) = if input.len() >= "svn+ssh://".len()
-            && input[.."svn+ssh://".len()].eq_ignore_ascii_case("svn+ssh://")
+        let (scheme, rest, default_port) = if input
+            .get(.."svn+ssh://".len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("svn+ssh://"))
         {
             ("svn+ssh://", &input["svn+ssh://".len()..], 22u16)
-        } else if input.len() >= "svn://".len()
-            && input[.."svn://".len()].eq_ignore_ascii_case("svn://")
+        } else if input
+            .get(.."svn://".len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("svn://"))
         {
             ("svn://", &input["svn://".len()..], 3690u16)
         } else {
@@ -206,6 +208,9 @@ mod tests {
     #[test]
     fn svn_url_parse_rejects_unknown_schemes() {
         let err = SvnUrl::parse("http://example.com/repo").unwrap_err();
+        assert!(matches!(err, SvnError::InvalidUrl(_)));
+
+        let err = SvnUrl::parse("😀😀😀").unwrap_err();
         assert!(matches!(err, SvnError::InvalidUrl(_)));
     }
 

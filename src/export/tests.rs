@@ -572,7 +572,7 @@ fn fs_editor_copies_file_from_copyfrom_when_no_textdelta_is_sent() {
     editor
         .on_event(EditorEvent::CloseFile {
             file_token: "f1".to_string(),
-            text_checksum: None,
+            text_checksum: Some("5d41402abc4b2a76b9719d911017c592".to_string()),
         })
         .unwrap();
     editor.on_event(EditorEvent::CloseEdit).unwrap();
@@ -643,13 +643,9 @@ fn fs_editor_rejects_no_textdelta_file_over_existing_dir() {
 }
 
 #[test]
-fn fs_editor_copies_dir_from_copyfrom() {
+fn fs_editor_rejects_unverifiable_dir_copy() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().to_path_buf();
-
-    std::fs::create_dir_all(root.join("srcdir/sub")).unwrap();
-    std::fs::write(root.join("srcdir/sub/file.txt"), b"hello").unwrap();
-
     let mut editor = FsEditor::new(root.clone());
     editor
         .on_event(EditorEvent::OpenRoot {
@@ -657,45 +653,6 @@ fn fs_editor_copies_dir_from_copyfrom() {
             token: "d0".to_string(),
         })
         .unwrap();
-    editor
-        .on_event(EditorEvent::AddDir {
-            path: "destdir".to_string(),
-            parent_token: "d0".to_string(),
-            child_token: "d1".to_string(),
-            copy_from: Some(("srcdir".to_string(), 1)),
-        })
-        .unwrap();
-    editor
-        .on_event(EditorEvent::CloseDir {
-            dir_token: "d1".to_string(),
-        })
-        .unwrap();
-    editor.on_event(EditorEvent::CloseEdit).unwrap();
-
-    assert_eq!(
-        std::fs::read(root.join("destdir/sub/file.txt")).unwrap(),
-        b"hello"
-    );
-}
-
-#[test]
-fn fs_editor_rejects_copyfrom_dir_over_existing_file() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().to_path_buf();
-
-    std::fs::create_dir_all(root.join("srcdir/sub")).unwrap();
-    std::fs::write(root.join("srcdir/sub/file.txt"), b"hello").unwrap();
-    std::fs::create_dir_all(root.join("destdir")).unwrap();
-    std::fs::write(root.join("destdir/sub"), b"conflict").unwrap();
-
-    let mut editor = FsEditor::new(root);
-    editor
-        .on_event(EditorEvent::OpenRoot {
-            rev: None,
-            token: "d0".to_string(),
-        })
-        .unwrap();
-
     let err = editor
         .on_event(EditorEvent::AddDir {
             path: "destdir".to_string(),
@@ -704,68 +661,8 @@ fn fs_editor_rejects_copyfrom_dir_over_existing_file() {
             copy_from: Some(("srcdir".to_string(), 1)),
         })
         .unwrap_err();
-    assert!(matches!(err, SvnError::InvalidPath(_)));
-}
-
-#[test]
-fn fs_editor_dir_copyfrom_provides_base_for_identity_textdelta() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().to_path_buf();
-
-    std::fs::create_dir_all(root.join("srcdir/sub")).unwrap();
-    std::fs::write(root.join("srcdir/sub/file.txt"), b"hello").unwrap();
-
-    let mut editor = FsEditor::new(root.clone());
-    editor
-        .on_event(EditorEvent::OpenRoot {
-            rev: None,
-            token: "d0".to_string(),
-        })
-        .unwrap();
-    editor
-        .on_event(EditorEvent::AddDir {
-            path: "destdir".to_string(),
-            parent_token: "d0".to_string(),
-            child_token: "d1".to_string(),
-            copy_from: Some(("srcdir".to_string(), 1)),
-        })
-        .unwrap();
-    editor
-        .on_event(EditorEvent::OpenFile {
-            path: "destdir/sub/file.txt".to_string(),
-            dir_token: "d1".to_string(),
-            file_token: "f1".to_string(),
-            rev: 1,
-        })
-        .unwrap();
-    editor
-        .on_event(EditorEvent::ApplyTextDelta {
-            file_token: "f1".to_string(),
-            base_checksum: None,
-        })
-        .unwrap();
-    editor
-        .on_event(EditorEvent::TextDeltaEnd {
-            file_token: "f1".to_string(),
-        })
-        .unwrap();
-    editor
-        .on_event(EditorEvent::CloseFile {
-            file_token: "f1".to_string(),
-            text_checksum: None,
-        })
-        .unwrap();
-    editor
-        .on_event(EditorEvent::CloseDir {
-            dir_token: "d1".to_string(),
-        })
-        .unwrap();
-    editor.on_event(EditorEvent::CloseEdit).unwrap();
-
-    assert_eq!(
-        std::fs::read(root.join("destdir/sub/file.txt")).unwrap(),
-        b"hello"
-    );
+    assert!(matches!(err, SvnError::Protocol(_)));
+    assert!(!root.join("destdir").exists());
 }
 
 #[test]
@@ -796,7 +693,7 @@ fn tokio_fs_editor_copies_file_from_copyfrom_when_no_textdelta_is_sent() {
         editor
             .on_event(EditorEvent::CloseFile {
                 file_token: "f1".to_string(),
-                text_checksum: None,
+                text_checksum: Some("5d41402abc4b2a76b9719d911017c592".to_string()),
             })
             .await
             .unwrap();
@@ -881,14 +778,10 @@ fn tokio_fs_editor_rejects_no_textdelta_file_over_existing_dir() {
 }
 
 #[test]
-fn tokio_fs_editor_copies_dir_from_copyfrom() {
+fn tokio_fs_editor_rejects_unverifiable_dir_copy() {
     run_async(async {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().to_path_buf();
-
-        std::fs::create_dir_all(root.join("srcdir/sub")).unwrap();
-        std::fs::write(root.join("srcdir/sub/file.txt"), b"hello").unwrap();
-
         let mut editor = TokioFsEditor::new(root.clone());
         editor
             .on_event(EditorEvent::OpenRoot {
@@ -897,50 +790,6 @@ fn tokio_fs_editor_copies_dir_from_copyfrom() {
             })
             .await
             .unwrap();
-        editor
-            .on_event(EditorEvent::AddDir {
-                path: "destdir".to_string(),
-                parent_token: "d0".to_string(),
-                child_token: "d1".to_string(),
-                copy_from: Some(("srcdir".to_string(), 1)),
-            })
-            .await
-            .unwrap();
-        editor
-            .on_event(EditorEvent::CloseDir {
-                dir_token: "d1".to_string(),
-            })
-            .await
-            .unwrap();
-        editor.on_event(EditorEvent::CloseEdit).await.unwrap();
-
-        let written = tokio::fs::read(root.join("destdir/sub/file.txt"))
-            .await
-            .unwrap();
-        assert_eq!(written, b"hello");
-    });
-}
-
-#[test]
-fn tokio_fs_editor_rejects_copyfrom_dir_over_existing_file() {
-    run_async(async {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().to_path_buf();
-
-        std::fs::create_dir_all(root.join("srcdir/sub")).unwrap();
-        std::fs::write(root.join("srcdir/sub/file.txt"), b"hello").unwrap();
-        std::fs::create_dir_all(root.join("destdir")).unwrap();
-        std::fs::write(root.join("destdir/sub"), b"conflict").unwrap();
-
-        let mut editor = TokioFsEditor::new(root);
-        editor
-            .on_event(EditorEvent::OpenRoot {
-                rev: None,
-                token: "d0".to_string(),
-            })
-            .await
-            .unwrap();
-
         let err = editor
             .on_event(EditorEvent::AddDir {
                 path: "destdir".to_string(),
@@ -950,76 +799,161 @@ fn tokio_fs_editor_rejects_copyfrom_dir_over_existing_file() {
             })
             .await
             .unwrap_err();
-        assert!(matches!(err, SvnError::InvalidPath(_)));
+        assert!(matches!(err, SvnError::Protocol(_)));
+        assert!(!root.join("destdir").exists());
     });
 }
 
 #[test]
-fn tokio_fs_editor_dir_copyfrom_provides_base_for_identity_textdelta() {
+fn fs_editor_rejects_wrong_copy_revision_content() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().to_path_buf();
+    std::fs::write(root.join("src.txt"), b"newer").unwrap();
+    let mut editor = FsEditor::new(root.clone());
+    editor
+        .on_event(EditorEvent::OpenRoot {
+            rev: None,
+            token: "d0".into(),
+        })
+        .unwrap();
+    editor
+        .on_event(EditorEvent::AddFile {
+            path: "dst.txt".into(),
+            dir_token: "d0".into(),
+            file_token: "f1".into(),
+            copy_from: Some(("src.txt".into(), 1)),
+        })
+        .unwrap();
+    let err = editor
+        .on_event(EditorEvent::CloseFile {
+            file_token: "f1".into(),
+            text_checksum: Some("5d41402abc4b2a76b9719d911017c592".into()),
+        })
+        .unwrap_err();
+    assert!(matches!(err, SvnError::Protocol(_)));
+    assert!(!root.join("dst.txt").exists());
+}
+
+#[test]
+fn tokio_fs_editor_rejects_wrong_copy_revision_content() {
     run_async(async {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().to_path_buf();
-
-        std::fs::create_dir_all(root.join("srcdir/sub")).unwrap();
-        std::fs::write(root.join("srcdir/sub/file.txt"), b"hello").unwrap();
-
+        std::fs::write(root.join("src.txt"), b"newer").unwrap();
         let mut editor = TokioFsEditor::new(root.clone());
         editor
             .on_event(EditorEvent::OpenRoot {
                 rev: None,
-                token: "d0".to_string(),
+                token: "d0".into(),
             })
             .await
             .unwrap();
         editor
-            .on_event(EditorEvent::AddDir {
-                path: "destdir".to_string(),
-                parent_token: "d0".to_string(),
-                child_token: "d1".to_string(),
-                copy_from: Some(("srcdir".to_string(), 1)),
+            .on_event(EditorEvent::AddFile {
+                path: "dst.txt".into(),
+                dir_token: "d0".into(),
+                file_token: "f1".into(),
+                copy_from: Some(("src.txt".into(), 1)),
+            })
+            .await
+            .unwrap();
+        let err = editor
+            .on_event(EditorEvent::CloseFile {
+                file_token: "f1".into(),
+                text_checksum: Some("5d41402abc4b2a76b9719d911017c592".into()),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(_)));
+        assert!(!root.join("dst.txt").exists());
+    });
+}
+
+#[test]
+fn fs_editor_rejects_wrong_delta_checksum_before_replacing_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().to_path_buf();
+    std::fs::write(root.join("dst.txt"), b"original").unwrap();
+    let mut editor = FsEditor::new(root.clone());
+    editor
+        .on_event(EditorEvent::OpenRoot {
+            rev: None,
+            token: "d0".into(),
+        })
+        .unwrap();
+    editor
+        .on_event(EditorEvent::OpenFile {
+            path: "dst.txt".into(),
+            dir_token: "d0".into(),
+            file_token: "f1".into(),
+            rev: 1,
+        })
+        .unwrap();
+    editor
+        .on_event(EditorEvent::ApplyTextDelta {
+            file_token: "f1".into(),
+            base_checksum: None,
+        })
+        .unwrap();
+    editor
+        .on_event(EditorEvent::TextDeltaEnd {
+            file_token: "f1".into(),
+        })
+        .unwrap();
+    let err = editor
+        .on_event(EditorEvent::CloseFile {
+            file_token: "f1".into(),
+            text_checksum: Some("00000000000000000000000000000000".into()),
+        })
+        .unwrap_err();
+    assert!(matches!(err, SvnError::Protocol(_)));
+    assert_eq!(std::fs::read(root.join("dst.txt")).unwrap(), b"original");
+}
+
+#[test]
+fn tokio_fs_editor_rejects_wrong_delta_checksum_before_replacing_file() {
+    run_async(async {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        std::fs::write(root.join("dst.txt"), b"original").unwrap();
+        let mut editor = TokioFsEditor::new(root.clone());
+        editor
+            .on_event(EditorEvent::OpenRoot {
+                rev: None,
+                token: "d0".into(),
             })
             .await
             .unwrap();
         editor
             .on_event(EditorEvent::OpenFile {
-                path: "destdir/sub/file.txt".to_string(),
-                dir_token: "d1".to_string(),
-                file_token: "f1".to_string(),
+                path: "dst.txt".into(),
+                dir_token: "d0".into(),
+                file_token: "f1".into(),
                 rev: 1,
             })
             .await
             .unwrap();
         editor
             .on_event(EditorEvent::ApplyTextDelta {
-                file_token: "f1".to_string(),
+                file_token: "f1".into(),
                 base_checksum: None,
             })
             .await
             .unwrap();
         editor
             .on_event(EditorEvent::TextDeltaEnd {
-                file_token: "f1".to_string(),
+                file_token: "f1".into(),
             })
             .await
             .unwrap();
-        editor
+        let err = editor
             .on_event(EditorEvent::CloseFile {
-                file_token: "f1".to_string(),
-                text_checksum: None,
+                file_token: "f1".into(),
+                text_checksum: Some("00000000000000000000000000000000".into()),
             })
             .await
-            .unwrap();
-        editor
-            .on_event(EditorEvent::CloseDir {
-                dir_token: "d1".to_string(),
-            })
-            .await
-            .unwrap();
-        editor.on_event(EditorEvent::CloseEdit).await.unwrap();
-
-        let written = tokio::fs::read(root.join("destdir/sub/file.txt"))
-            .await
-            .unwrap();
-        assert_eq!(written, b"hello");
+            .unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(_)));
+        assert_eq!(std::fs::read(root.join("dst.txt")).unwrap(), b"original");
     });
 }

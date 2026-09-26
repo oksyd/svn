@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
+use md5::{Digest, Md5};
 use tokio::io::AsyncWriteExt;
 
 use crate::editor::{

@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_LIST_DEPTH: usize = 256;
+
 impl RaSvnConnection {
     pub(crate) async fn write_cmd_success(&mut self) -> Result<(), SvnError> {
         self.write_item(&SvnItem::List(vec![
@@ -296,6 +298,9 @@ impl RaSvnConnection {
                     }
                 }
                 b'(' => {
+                    if stack.len() >= MAX_LIST_DEPTH {
+                        return Err(SvnError::Protocol("list nesting too deep".into()));
+                    }
                     self.consume_byte().await?;
                     require_ws(self).await?;
                     stack.push(Vec::new());
@@ -320,7 +325,9 @@ impl RaSvnConnection {
                 let next = self.peek_byte().await?;
                 if next == b':' {
                     self.consume_byte().await?;
-                    let bytes = self.read_exact_vec(n as usize).await?;
+                    let len = usize::try_from(n)
+                        .map_err(|_| SvnError::Protocol("string length too large".into()))?;
+                    let bytes = self.read_exact_vec(len).await?;
                     require_ws(self).await?;
                     Ok(SvnItem::String(bytes))
                 } else {
@@ -342,7 +349,9 @@ impl RaSvnConnection {
     }
 
     async fn read_exact_vec(&mut self, n: usize) -> Result<Vec<u8>, SvnError> {
-        let mut out = Vec::with_capacity(n);
+        let mut out = Vec::new();
+        out.try_reserve_exact(n)
+            .map_err(|_| SvnError::Protocol("string length too large".into()))?;
         while out.len() < n {
             if self.pos < self.buf.len() {
                 let take = (n - out.len()).min(self.buf.len() - self.pos);

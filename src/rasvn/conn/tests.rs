@@ -343,6 +343,28 @@ fn read_item_rejects_number_overflow() {
 }
 
 #[test]
+fn read_item_rejects_oversized_string_length() {
+    run_async(async {
+        let (mut conn, mut server) = connected_conn(None, None).await;
+        server.write_all(b"18446744073709551615: ").await.unwrap();
+        server.flush().await.unwrap();
+        let err = conn.read_item().await.unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "string length too large"));
+    });
+}
+
+#[test]
+fn read_item_rejects_excessive_list_nesting() {
+    run_async(async {
+        let (mut conn, mut server) = connected_conn(None, None).await;
+        server.write_all(&b"( ".repeat(257)).await.unwrap();
+        server.flush().await.unwrap();
+        let err = conn.read_item().await.unwrap_err();
+        assert!(matches!(err, SvnError::Protocol(msg) if msg == "list nesting too deep"));
+    });
+}
+
+#[test]
 fn read_item_requires_whitespace_after_strings() {
     run_async(async {
         let (mut conn, mut server) = connected_conn(None, None).await;

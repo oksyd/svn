@@ -1,5 +1,59 @@
 use super::*;
 
+pub(super) fn verify_empty_checksum(expected: &str) -> Result<(), SvnError> {
+    let expected = expected.strip_prefix("md5:").unwrap_or(expected);
+    if expected.eq_ignore_ascii_case("d41d8cd98f00b204e9800998ecf8427e") {
+        Ok(())
+    } else {
+        Err(SvnError::Protocol("empty base checksum mismatch".into()))
+    }
+}
+
+pub(super) fn verify_checksum(path: &Path, expected: &str) -> Result<(), SvnError> {
+    let expected = expected.strip_prefix("md5:").unwrap_or(expected);
+    if expected.len() != 32 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(SvnError::Protocol("unsupported file checksum".into()));
+    }
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Md5::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    if !hex::encode(hasher.finalize()).eq_ignore_ascii_case(expected) {
+        return Err(SvnError::Protocol("file checksum mismatch".into()));
+    }
+    Ok(())
+}
+
+pub(super) async fn verify_checksum_async(path: &Path, expected: &str) -> Result<(), SvnError> {
+    use tokio::io::AsyncReadExt;
+
+    let expected = expected.strip_prefix("md5:").unwrap_or(expected);
+    if expected.len() != 32 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(SvnError::Protocol("unsupported file checksum".into()));
+    }
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Md5::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    if !hex::encode(hasher.finalize()).eq_ignore_ascii_case(expected) {
+        return Err(SvnError::Protocol("file checksum mismatch".into()));
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(super) struct ExportState {
     root: PathBuf,
@@ -503,33 +557,6 @@ pub(super) async fn file_exists_no_symlink_async(
     }
 }
 
-pub(super) fn dir_exists_no_symlink(root: &Path, path: &Path) -> Result<bool, SvnError> {
-    ensure_no_symlink_prefix(root, path)?;
-
-    match existing_path_kind(path)? {
-        Some(ExistingPathKind::Dir) => Ok(true),
-        Some(ExistingPathKind::File) => Err(SvnError::InvalidPath(
-            "refusing to treat a non-directory as a directory".into(),
-        )),
-        None => Ok(false),
-    }
-}
-
-pub(super) async fn dir_exists_no_symlink_async(
-    root: &Path,
-    path: &Path,
-) -> Result<bool, SvnError> {
-    ensure_no_symlink_prefix_async(root, path).await?;
-
-    match existing_path_kind_async(path).await? {
-        Some(ExistingPathKind::Dir) => Ok(true),
-        Some(ExistingPathKind::File) => Err(SvnError::InvalidPath(
-            "refusing to treat a non-directory as a directory".into(),
-        )),
-        None => Ok(false),
-    }
-}
-
 pub(super) fn copy_file_no_symlink(root: &Path, src: &Path, dest: &Path) -> Result<bool, SvnError> {
     ensure_no_symlink_prefix(root, src)?;
 
@@ -645,292 +672,6 @@ pub(super) fn new_tmp_path(
     *next_tmp_id = next_tmp_id.wrapping_add(1);
     parent.join(format!(".svn-rs.{name}.{token}.{}.tmp", *next_tmp_id))
 }
-
-pub(super) fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), SvnError> {
-    if dest.starts_with(src) {
-        return Err(SvnError::InvalidPath(
-            "refusing to copy a directory into its own subtree".into(),
-        ));
-    }
-
-    let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
-    while let Some((src_dir, dest_dir)) = stack.pop() {
-        match std::fs::symlink_metadata(&dest_dir) {
-            Ok(meta) if is_symlink_like(&meta) => {
-                return Err(SvnError::InvalidPath(
-                    "refusing to copy into a symlink/reparse point".into(),
-                ));
-            }
-            Ok(_) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err.into()),
-        }
-        std::fs::create_dir_all(&dest_dir)?;
-        for entry in std::fs::read_dir(&src_dir)? {
-            let entry = entry?;
-            let src_path = entry.path();
-            let src_meta = std::fs::symlink_metadata(&src_path)?;
-            if is_symlink_like(&src_meta) {
-                return Err(SvnError::InvalidPath(
-                    "refusing to copy a symlink/reparse point".into(),
-                ));
-            }
-            let file_type = src_meta.file_type();
-            let dest_path = dest_dir.join(entry.file_name());
-
-            if file_type.is_dir() {
-                if matches!(
-                    existing_path_kind(&dest_path)?,
-                    Some(ExistingPathKind::File)
-                ) {
-                    return Err(SvnError::InvalidPath(
-                        "refusing to copy a directory over a non-directory".into(),
-                    ));
-                }
-                stack.push((src_path, dest_path));
-                continue;
-            }
-
-            if file_type.is_file() {
-                match existing_path_kind(&dest_path)? {
-                    Some(ExistingPathKind::File) | None => {}
-                    Some(ExistingPathKind::Dir) => {
-                        return Err(SvnError::InvalidPath(
-                            "refusing to copy a file over a non-file".into(),
-                        ));
-                    }
-                }
-                let _ = std::fs::copy(&src_path, &dest_path)?;
-                continue;
-            }
-
-            return Err(SvnError::InvalidPath(
-                "refusing to copy an unknown file type".into(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-pub(super) async fn copy_dir_recursive_async(src: &Path, dest: &Path) -> Result<(), SvnError> {
-    if dest.starts_with(src) {
-        return Err(SvnError::InvalidPath(
-            "refusing to copy a directory into its own subtree".into(),
-        ));
-    }
-
-    let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
-    while let Some((src_dir, dest_dir)) = stack.pop() {
-        match tokio::fs::symlink_metadata(&dest_dir).await {
-            Ok(meta) if is_symlink_like(&meta) => {
-                return Err(SvnError::InvalidPath(
-                    "refusing to copy into a symlink/reparse point".into(),
-                ));
-            }
-            Ok(_) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err.into()),
-        }
-        tokio::fs::create_dir_all(&dest_dir).await?;
-        let mut rd = tokio::fs::read_dir(&src_dir).await?;
-        while let Some(entry) = rd.next_entry().await? {
-            let src_path = entry.path();
-            let src_meta = tokio::fs::symlink_metadata(&src_path).await?;
-            if is_symlink_like(&src_meta) {
-                return Err(SvnError::InvalidPath(
-                    "refusing to copy a symlink/reparse point".into(),
-                ));
-            }
-            let file_type = src_meta.file_type();
-            let dest_path = dest_dir.join(entry.file_name());
-
-            if file_type.is_dir() {
-                if matches!(
-                    existing_path_kind_async(&dest_path).await?,
-                    Some(ExistingPathKind::File)
-                ) {
-                    return Err(SvnError::InvalidPath(
-                        "refusing to copy a directory over a non-directory".into(),
-                    ));
-                }
-                stack.push((src_path, dest_path));
-                continue;
-            }
-
-            if file_type.is_file() {
-                match existing_path_kind_async(&dest_path).await? {
-                    Some(ExistingPathKind::File) | None => {}
-                    Some(ExistingPathKind::Dir) => {
-                        return Err(SvnError::InvalidPath(
-                            "refusing to copy a file over a non-file".into(),
-                        ));
-                    }
-                }
-                let _ = tokio::fs::copy(&src_path, &dest_path).await?;
-                continue;
-            }
-
-            return Err(SvnError::InvalidPath(
-                "refusing to copy an unknown file type".into(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn copy_dir_missing_recursive(src: &Path, dest: &Path) -> Result<(), SvnError> {
-    if dest.starts_with(src) {
-        return Err(SvnError::InvalidPath(
-            "refusing to copy a directory into its own subtree".into(),
-        ));
-    }
-
-    let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
-    while let Some((src_dir, dest_dir)) = stack.pop() {
-        match std::fs::symlink_metadata(&dest_dir) {
-            Ok(meta) if is_symlink_like(&meta) => {
-                return Err(SvnError::InvalidPath(
-                    "refusing to copy into a symlink/reparse point".into(),
-                ));
-            }
-            Ok(_) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err.into()),
-        }
-        std::fs::create_dir_all(&dest_dir)?;
-        for entry in std::fs::read_dir(&src_dir)? {
-            let entry = entry?;
-            let src_path = entry.path();
-            let src_meta = std::fs::symlink_metadata(&src_path)?;
-            if is_symlink_like(&src_meta) {
-                return Err(SvnError::InvalidPath(
-                    "refusing to copy a symlink/reparse point".into(),
-                ));
-            }
-            let file_type = src_meta.file_type();
-            let dest_path = dest_dir.join(entry.file_name());
-
-            if let Some(dest_kind) = existing_path_kind(&dest_path)? {
-                match (file_type.is_dir(), file_type.is_file(), dest_kind) {
-                    (true, _, ExistingPathKind::Dir) => {
-                        stack.push((src_path, dest_path));
-                    }
-                    (true, _, ExistingPathKind::File) => {
-                        return Err(SvnError::InvalidPath(
-                            "refusing to merge a copied directory over a non-directory".into(),
-                        ));
-                    }
-                    (_, true, ExistingPathKind::File) => {}
-                    (_, true, ExistingPathKind::Dir) => {
-                        return Err(SvnError::InvalidPath(
-                            "refusing to merge a copied file over a non-file".into(),
-                        ));
-                    }
-                    _ => {
-                        return Err(SvnError::InvalidPath(
-                            "refusing to copy an unknown file type".into(),
-                        ));
-                    }
-                }
-                continue;
-            }
-
-            if file_type.is_dir() {
-                copy_dir_recursive(&src_path, &dest_path)?;
-                continue;
-            }
-
-            if file_type.is_file() {
-                let _ = std::fs::copy(&src_path, &dest_path)?;
-                continue;
-            }
-
-            return Err(SvnError::InvalidPath(
-                "refusing to copy an unknown file type".into(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-pub(super) async fn copy_dir_missing_recursive_async(
-    src: &Path,
-    dest: &Path,
-) -> Result<(), SvnError> {
-    if dest.starts_with(src) {
-        return Err(SvnError::InvalidPath(
-            "refusing to copy a directory into its own subtree".into(),
-        ));
-    }
-
-    let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
-    while let Some((src_dir, dest_dir)) = stack.pop() {
-        match tokio::fs::symlink_metadata(&dest_dir).await {
-            Ok(meta) if is_symlink_like(&meta) => {
-                return Err(SvnError::InvalidPath(
-                    "refusing to copy into a symlink/reparse point".into(),
-                ));
-            }
-            Ok(_) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err.into()),
-        }
-        tokio::fs::create_dir_all(&dest_dir).await?;
-        let mut rd = tokio::fs::read_dir(&src_dir).await?;
-        while let Some(entry) = rd.next_entry().await? {
-            let src_path = entry.path();
-            let src_meta = tokio::fs::symlink_metadata(&src_path).await?;
-            if is_symlink_like(&src_meta) {
-                return Err(SvnError::InvalidPath(
-                    "refusing to copy a symlink/reparse point".into(),
-                ));
-            }
-            let file_type = src_meta.file_type();
-            let dest_path = dest_dir.join(entry.file_name());
-
-            if let Some(dest_kind) = existing_path_kind_async(&dest_path).await? {
-                match (file_type.is_dir(), file_type.is_file(), dest_kind) {
-                    (true, _, ExistingPathKind::Dir) => {
-                        stack.push((src_path, dest_path));
-                    }
-                    (true, _, ExistingPathKind::File) => {
-                        return Err(SvnError::InvalidPath(
-                            "refusing to merge a copied directory over a non-directory".into(),
-                        ));
-                    }
-                    (_, true, ExistingPathKind::File) => {}
-                    (_, true, ExistingPathKind::Dir) => {
-                        return Err(SvnError::InvalidPath(
-                            "refusing to merge a copied file over a non-file".into(),
-                        ));
-                    }
-                    _ => {
-                        return Err(SvnError::InvalidPath(
-                            "refusing to copy an unknown file type".into(),
-                        ));
-                    }
-                }
-                continue;
-            }
-
-            if file_type.is_dir() {
-                copy_dir_recursive_async(&src_path, &dest_path).await?;
-                continue;
-            }
-
-            if file_type.is_file() {
-                let _ = tokio::fs::copy(&src_path, &dest_path).await?;
-                continue;
-            }
-
-            return Err(SvnError::InvalidPath(
-                "refusing to copy an unknown file type".into(),
-            ));
-        }
-    }
-    Ok(())
-}
-
 #[cfg(unix)]
 pub(super) fn apply_executable_bit(path: &Path, exec: bool) -> Result<(), SvnError> {
     use std::os::unix::fs::PermissionsExt;
