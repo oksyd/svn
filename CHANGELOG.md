@@ -1,3 +1,13 @@
+## [0.1.15] - 2026-09-26
+
+### 🐛 Bug Fixes
+
+- Reject malformed SVN input without panicking
+## [0.1.14] - 2026-09-23
+
+### ⚙️ Miscellaneous Tasks
+
+- Release svn version 0.1.14
 ## [0.1.13] - 2026-06-11
 
 ### 🐛 Bug Fixes
