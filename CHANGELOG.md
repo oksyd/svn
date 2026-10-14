@@ -1,8 +1,17 @@
+## [0.1.16] - 2026-10-14
+
+### 🐛 Bug Fixes
+
+- Include required empty list in all-revprops log requests
 ## [0.1.15] - 2026-09-26
 
 ### 🐛 Bug Fixes
 
 - Reject malformed SVN input without panicking
+
+### ⚙️ Miscellaneous Tasks
+
+- Release svn version 0.1.15
 ## [0.1.14] - 2026-09-23
 
 ### ⚙️ Miscellaneous Tasks
