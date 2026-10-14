@@ -23,7 +23,7 @@ jobs:
         run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
       - name: Select Rust toolchain
         run: rustup default 1.98.1
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -91,7 +91,7 @@ jobs:
         run: rustup toolchain install ${{ matrix.rust }} --profile minimal
       - name: Select Rust toolchain
         run: rustup default ${{ matrix.rust }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -113,7 +113,7 @@ jobs:
         run: rustup toolchain install 1.98.1 --profile minimal
       - name: Select Rust toolchain
         run: rustup default 1.98.1
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
