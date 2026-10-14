@@ -75,6 +75,8 @@ impl RaSvnSession {
                 match &revprops {
                     LogRevProps::All => {
                         params_items.push(SvnItem::Word("all-revprops".to_string()));
+                        // svnserve requires a revprop name list even when requesting all revprops.
+                        params_items.push(SvnItem::List(Vec::new()));
                     }
                     LogRevProps::Custom(revprops) => {
                         params_items.push(SvnItem::Word("revprops".to_string()));
@@ -209,6 +211,8 @@ impl RaSvnSession {
             match &revprops {
                 LogRevProps::All => {
                     params_items.push(SvnItem::Word("all-revprops".to_string()));
+                    // svnserve requires a revprop name list even when requesting all revprops.
+                    params_items.push(SvnItem::List(Vec::new()));
                 }
                 LogRevProps::Custom(revprops) => {
                     params_items.push(SvnItem::Word("revprops".to_string()));

@@ -13,8 +13,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use svn::{
-    CommitBuilder, CommitOptions, EditorCommand, LockOptions, NodeKind, RaSvnClient, SvnUrl,
-    SvndiffMode, UnlockOptions,
+    CommitBuilder, CommitOptions, EditorCommand, LockOptions, LogEntry, LogOptions, LogRevProps,
+    NodeKind, PropertyList, RaSvnClient, RaSvnSession, SvnUrl, SvndiffMode, UnlockOptions,
 };
 
 fn run_async<T, F, Fut>(f: F) -> T
@@ -131,6 +131,10 @@ impl SvnserveFixture {
 }
 
 fn start_fixture() -> SvnserveFixture {
+    start_fixture_with_auth(false)
+}
+
+fn start_fixture_with_auth(require_auth: bool) -> SvnserveFixture {
     if !interop_enabled() {
         panic!("SVN_INTEROP not enabled");
     }
@@ -149,7 +153,12 @@ fn start_fixture() -> SvnserveFixture {
     let conf = repo.join("conf");
     let mut svnserve_conf = std::fs::File::create(conf.join("svnserve.conf")).unwrap();
     writeln!(svnserve_conf, "[general]").unwrap();
-    writeln!(svnserve_conf, "anon-access = read").unwrap();
+    writeln!(
+        svnserve_conf,
+        "anon-access = {}",
+        if require_auth { "none" } else { "read" }
+    )
+    .unwrap();
     writeln!(svnserve_conf, "auth-access = write").unwrap();
     writeln!(svnserve_conf, "password-db = passwd").unwrap();
     writeln!(svnserve_conf, "realm = svn-rs-test").unwrap();
@@ -258,6 +267,189 @@ async fn read_file(session: &mut svn::RaSvnSession, path: &str, rev: u64) -> Vec
         .await
         .unwrap();
     out.buf
+}
+
+fn seed_log_revprops(fixture: &SvnserveFixture) -> PropertyList {
+    let props = PropertyList::from([
+        ("svn:author".to_string(), b"alice".to_vec()),
+        (
+            "svn:date".to_string(),
+            b"2025-01-02T03:04:05.000000Z".to_vec(),
+        ),
+        ("svn:log".to_string(), b"init".to_vec()),
+        ("test:trace".to_string(), b"issue-30".to_vec()),
+        ("test:opaque".to_string(), b"opaque\0\xffvalue".to_vec()),
+    ]);
+    let repo = fixture._tmp.path().join("root/repo");
+    let repo_url = file_url(&repo);
+    let value_file = fixture._tmp.path().join("revprop-value");
+    for (name, value) in &props {
+        std::fs::write(&value_file, value).unwrap();
+        run_checked(
+            "svn",
+            &[
+                "propset",
+                "--revprop",
+                "-r",
+                "1",
+                name,
+                "--file",
+                value_file.to_str().unwrap(),
+                repo_url.as_str(),
+                "--non-interactive",
+                "--no-auth-cache",
+            ],
+            None,
+        );
+    }
+    props
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LogApi {
+    Convenience,
+    Collected,
+    Streaming,
+    StreamingRetrying,
+}
+
+async fn collect_log(
+    session: &mut RaSvnSession,
+    api: LogApi,
+    options: &LogOptions,
+) -> Vec<LogEntry> {
+    match api {
+        LogApi::Convenience => session.log(1, 1).await.unwrap(),
+        LogApi::Collected => session.log_with_options(options).await.unwrap(),
+        LogApi::Streaming | LogApi::StreamingRetrying => {
+            let mut entries = Vec::new();
+            let on_entry = |entry| {
+                entries.push(entry);
+                Ok(())
+            };
+            let result = match api {
+                LogApi::Streaming => session.log_each(options, on_entry).await,
+                _ => session.log_each_retrying(options, on_entry).await,
+            };
+            result.unwrap_or_else(|err| panic!("{api:?} log failed: {err}"));
+            entries
+        }
+    }
+}
+
+async fn assert_log_response(
+    session: &mut RaSvnSession,
+    entries: &[LogEntry],
+    expected_props: &PropertyList,
+    changed_paths: bool,
+) {
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(entry.rev, 1);
+    assert_eq!(&entry.rev_props, expected_props);
+    for (name, actual) in [
+        ("svn:author", entry.author.as_deref()),
+        ("svn:date", entry.date.as_deref()),
+        ("svn:log", entry.message.as_deref()),
+    ] {
+        let expected = expected_props
+            .get(name)
+            .map(|value| std::str::from_utf8(value).unwrap());
+        assert_eq!(actual, expected, "{name}");
+    }
+    if changed_paths {
+        let mut paths: Vec<_> = entry
+            .changed_paths
+            .iter()
+            .map(|path| (path.path.as_str(), path.action.as_str()))
+            .collect();
+        paths.sort_unstable();
+        assert_eq!(paths, [("trunk", "A"), ("trunk/hello.txt", "A")]);
+    } else {
+        assert!(entry.changed_paths.is_empty());
+    }
+    assert!(!entry.has_children);
+    assert!(!entry.invalid_revnum);
+    assert!(!entry.subtractive_merge);
+    // A successful log must consume its final response and leave the session usable.
+    assert_eq!(session.get_latest_rev().await.unwrap(), 1);
+}
+
+async fn check_log_interop(require_auth: bool) {
+    let mut fixture = start_fixture_with_auth(require_auth);
+    let all_props = seed_log_revprops(&fixture);
+    fixture.wait_ready().await;
+
+    let url = SvnUrl::parse(&fixture.url()).unwrap();
+    let (username, password) = if require_auth {
+        (Some("alice".to_string()), Some("secret".to_string()))
+    } else {
+        (None, None)
+    };
+    // Retrying must not hide a malformed request that disconnects svnserve.
+    let client = RaSvnClient::new(url, username, password)
+        .with_reconnect_retries(0)
+        .with_read_timeout(Duration::from_secs(5));
+    let mut session = client.open_session().await.unwrap();
+    let all_options = LogOptions::between(1, 1);
+    for api in [
+        LogApi::Convenience,
+        LogApi::Collected,
+        LogApi::Streaming,
+        LogApi::StreamingRetrying,
+    ] {
+        let entries = collect_log(&mut session, api, &all_options).await;
+        assert_log_response(&mut session, &entries, &all_props, true).await;
+    }
+
+    for names in [
+        vec!["svn:author", "svn:date", "svn:log"],
+        vec!["svn:author", "test:trace"],
+        vec!["test:opaque"],
+        vec![],
+    ] {
+        let expected_props: PropertyList = names
+            .iter()
+            .map(|name| ((*name).to_string(), all_props[*name].clone()))
+            .collect();
+        let options = LogOptions {
+            changed_paths: false,
+            revprops: LogRevProps::Custom(names.into_iter().map(str::to_string).collect()),
+            ..LogOptions::between(1, 1)
+        };
+        for api in [
+            LogApi::Collected,
+            LogApi::Streaming,
+            LogApi::StreamingRetrying,
+        ] {
+            let entries = collect_log(&mut session, api, &options).await;
+            assert_log_response(&mut session, &entries, &expected_props, false).await;
+        }
+    }
+
+    // Also exercise the client convenience wrapper against the real server.
+    let entries = client.log(1, 1).await.unwrap();
+    assert_log_response(&mut session, &entries, &all_props, true).await;
+    assert_eq!(
+        read_file(&mut session, "trunk/hello.txt", 1).await,
+        b"hello\n"
+    );
+}
+
+#[test]
+fn interop_svnserve_log_revprops_anonymous() {
+    if !interop_enabled() {
+        return;
+    }
+    run_async(|| check_log_interop(false));
+}
+
+#[test]
+fn interop_svnserve_log_revprops_authenticated() {
+    if !interop_enabled() {
+        return;
+    }
+    run_async(|| check_log_interop(true));
 }
 
 #[test]
