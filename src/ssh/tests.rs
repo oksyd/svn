@@ -44,7 +44,7 @@ fn openssh_config_does_not_override_explicit_url_port() {
     let params = cfg.query("example.com");
 
     let url = SvnUrl::parse("svn+ssh://example.com:2200/repo").unwrap();
-    let ssh = SshConfig::new(SshAuth::None);
+    let ssh = SshConfig::new(SshAuth::None).with_username("alice");
     let settings =
         resolve_ssh_settings(&url, &ssh, Duration::from_secs(30), Some(&params)).unwrap();
     assert_eq!(settings.connect_port, 2200);
@@ -56,7 +56,7 @@ fn openssh_config_host_key_alias_is_used_for_known_hosts_lookup() {
     let params = cfg.query("example.com");
 
     let url = SvnUrl::parse("svn+ssh://example.com/repo").unwrap();
-    let ssh = SshConfig::new(SshAuth::None);
+    let ssh = SshConfig::new(SshAuth::None).with_username("alice");
     let settings =
         resolve_ssh_settings(&url, &ssh, Duration::from_secs(30), Some(&params)).unwrap();
     assert_eq!(settings.known_hosts_host, "alias");
@@ -68,7 +68,7 @@ fn openssh_config_strict_host_key_checking_no_disables_verification() {
     let params = cfg.query("example.com");
 
     let url = SvnUrl::parse("svn+ssh://example.com/repo").unwrap();
-    let ssh = SshConfig::new(SshAuth::None);
+    let ssh = SshConfig::new(SshAuth::None).with_username("alice");
     let settings =
         resolve_ssh_settings(&url, &ssh, Duration::from_secs(30), Some(&params)).unwrap();
     assert!(matches!(settings.host_key, SshHostKeyPolicy::AcceptAny));
@@ -81,7 +81,7 @@ fn openssh_config_strict_host_key_checking_accept_new_enables_learning() {
     let params = cfg.query("example.com");
 
     let url = SvnUrl::parse("svn+ssh://example.com/repo").unwrap();
-    let ssh = SshConfig::new(SshAuth::None);
+    let ssh = SshConfig::new(SshAuth::None).with_username("alice");
     let settings =
         resolve_ssh_settings(&url, &ssh, Duration::from_secs(30), Some(&params)).unwrap();
     assert!(settings.accept_new_host_keys);

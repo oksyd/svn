@@ -6,6 +6,10 @@ use super::*;
 impl CommitBuilder {
     /// Builds a low-level editor command sequence suitable for
     /// [`RaSvnSession::commit`].
+    ///
+    /// May read repository metadata to resolve the base revision, node kinds,
+    /// and supported delta format. This method does not submit a commit.
+    /// Most callers can use [`RaSvnSession::commit_with_builder`] directly.
     pub async fn build_editor_commands(
         &self,
         session: &mut RaSvnSession,

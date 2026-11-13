@@ -95,6 +95,32 @@ impl std::fmt::Display for ServerError {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 /// Errors returned by this crate.
+///
+/// Match variants to separate input validation, authentication, I/O, and server
+/// failures. [`ServerError::chain`] preserves Subversion error codes and
+/// messages. This enum is non-exhaustive; include a fallback arm when matching.
+/// A failed operation can have produced partial output or remote effects; see
+/// the operation's documentation before retrying it.
+///
+/// # Example
+///
+/// ```
+/// use svn::SvnError;
+///
+/// fn report_error(error: &SvnError) {
+///     match error {
+///         SvnError::Server(server) => {
+///             for item in &server.chain {
+///                 eprintln!("SVN {}: {}", item.code, item.message.as_deref().unwrap_or(""));
+///             }
+///         }
+///         SvnError::Io(io) if io.kind() == std::io::ErrorKind::TimedOut => {
+///             eprintln!("I/O timed out");
+///         }
+///         _ => eprintln!("{error}"),
+///     }
+/// }
+/// ```
 pub enum SvnError {
     /// The provided URL is syntactically invalid or unsupported.
     #[error("invalid svn url: {0}")]
@@ -102,10 +128,13 @@ pub enum SvnError {
     /// The provided repository path is invalid or unsafe.
     #[error("invalid path: {0}")]
     InvalidPath(String),
-    /// An I/O error occurred while reading/writing the network stream.
+    /// An I/O error from the transport, a caller-provided stream, or the filesystem.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    /// The server response did not match the expected `ra_svn` protocol shape.
+    /// Invalid protocol data, an unsupported operation, or a local operation limit.
+    ///
+    /// Also used for errors such as exceeding a download byte limit, invalid
+    /// commit plans, or exhausting a pool's acquire timeout.
     #[error("protocol error: {0}")]
     Protocol(String),
     /// The server requested authentication but offered no supported mechanisms.

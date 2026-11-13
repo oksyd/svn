@@ -496,11 +496,11 @@ fn tokenize_ssh_config_line(line: &str) -> Vec<String> {
         }
 
         if ch == '\'' && !in_double {
-            in_single = !in_single;
+            in_single.toggle();
             continue;
         }
         if ch == '"' && !in_single {
-            in_double = !in_double;
+            in_double.toggle();
             continue;
         }
 

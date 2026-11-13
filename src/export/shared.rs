@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn verify_empty_checksum(expected: &str) -> Result<(), SvnError> {
-    let expected = expected.strip_prefix("md5:").unwrap_or(expected);
+    let expected = expected.trim_prefix("md5:");
     if expected.eq_ignore_ascii_case("d41d8cd98f00b204e9800998ecf8427e") {
         Ok(())
     } else {
@@ -10,7 +10,7 @@ pub(super) fn verify_empty_checksum(expected: &str) -> Result<(), SvnError> {
 }
 
 pub(super) fn verify_checksum(path: &Path, expected: &str) -> Result<(), SvnError> {
-    let expected = expected.strip_prefix("md5:").unwrap_or(expected);
+    let expected = expected.trim_prefix("md5:");
     if expected.len() != 32 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(SvnError::Protocol("unsupported file checksum".into()));
     }
@@ -34,7 +34,7 @@ pub(super) fn verify_checksum(path: &Path, expected: &str) -> Result<(), SvnErro
 pub(super) async fn verify_checksum_async(path: &Path, expected: &str) -> Result<(), SvnError> {
     use tokio::io::AsyncReadExt;
 
-    let expected = expected.strip_prefix("md5:").unwrap_or(expected);
+    let expected = expected.trim_prefix("md5:");
     if expected.len() != 32 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(SvnError::Protocol("unsupported file checksum".into()));
     }

@@ -5,27 +5,32 @@ use super::*;
 /// `ra_svn` sessions are stateful and require `&mut` access, which makes a single
 /// session inherently serial. If you want to run multiple independent
 /// operations concurrently, you need multiple sessions (and therefore multiple
-/// TCP connections).
+/// transport connections).
 ///
 /// `SessionPool` manages those sessions for you:
 /// - Limits concurrency via `max_sessions`.
 /// - Reuses sessions (and their handshake) across operations.
 /// - Creates new sessions on demand up to the limit.
 ///
+/// Clones share the same capacity and idle sessions. Construction opens no
+/// connections; use [`warm_up_to`](Self::warm_up_to) to preconnect. A checked-out
+/// [`PooledSession`] holds capacity until it is dropped, then returns its
+/// session to the pool. Configure [`SessionPoolConfig::with_acquire_timeout`]
+/// to bound how long callers wait for capacity.
+///
 /// # Example
 ///
 /// ```rust,no_run
-/// # use svn::{RaSvnClient, SessionPool, SvnUrl};
-/// # async fn demo() -> svn::Result<()> {
-/// let client = RaSvnClient::new(SvnUrl::parse("svn://example.com/repo")?, None, None);
-/// let pool = SessionPool::new(client, 8)?;
+/// use svn::{RaSvnClient, SessionPool};
 ///
-/// let rev = {
-///     let mut session = pool.session().await?;
-///     session.get_latest_rev().await?
-/// };
-/// # Ok(())
-/// # }
+/// async fn pooled_read(client: RaSvnClient) -> svn::Result<u64> {
+///     let pool = SessionPool::new(client, 8)?;
+///     let revision = {
+///         let mut session = pool.session().await?;
+///         session.get_latest_rev().await?
+///     }; // The session is returned here; the pool can reuse its connection.
+///     Ok(revision)
+/// }
 /// ```
 #[derive(Clone)]
 pub struct SessionPool {
@@ -230,7 +235,9 @@ struct IdleSession {
 
 /// A checked-out session returned by [`SessionPool::session`].
 ///
-/// When dropped, the session is returned to its originating pool.
+/// Dereferences to [`RaSvnSession`]. When dropped, the session is returned to its
+/// originating pool and capacity is released. This does not discard or reset
+/// the connection; see [`RaSvnSession`] for cancellation handling.
 pub struct PooledSession {
     inner: Arc<Inner>,
     session: Option<RaSvnSession>,

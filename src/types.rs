@@ -231,6 +231,10 @@ pub struct LogEntry {
 }
 
 /// A single path change entry within a [`LogEntry`].
+///
+/// Paths come from the server's revision log and are anchored at the repository
+/// root, typically with a leading `/`. They are not automatically rebased to a
+/// session opened at a subdirectory.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangedPath {
@@ -297,7 +301,12 @@ impl Display for NodeKind {
 pub struct DirEntry {
     /// Entry name (basename).
     pub name: String,
-    /// Entry path relative to the listing root.
+    /// Entry path in the producing listing operation's namespace.
+    ///
+    /// [`crate::RaSvnSession::list_dir`] prefixes the requested directory (for
+    /// example `"trunk/README.md"`). [`crate::RaSvnSession::list`] retains the
+    /// server's path with leading `/` removed. See the producing method before
+    /// joining this path to a local directory or using it in another request.
     pub path: String,
     /// Node kind.
     pub kind: NodeKind,

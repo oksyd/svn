@@ -1,124 +1,68 @@
-<h1 align="center"><code>svn-rs</code></h1>
+# svn
 
-<p align="center">Async Rust SVN client for Subversion <code>svn://</code>, <code>svn+ssh://</code>, and <code>ra_svn</code> workflows.</p>
+[![Crates.io version](https://img.shields.io/crates/v/svn.svg)](https://crates.io/crates/svn)
+[![API documentation](https://img.shields.io/docsrs/svn?logo=rust)](https://docs.rs/svn)
+[![CI status](https://github.com/oksyd/svn/actions/workflows/ci.yaml/badge.svg)](https://github.com/oksyd/svn/actions/workflows/ci.yaml)
+[![MSRV 1.100.0](https://img.shields.io/badge/MSRV-1.100.0-informational)](Cargo.toml)
 
-<div align="center">
-  <a href="https://crates.io/crates/svn">
-    <img src="https://img.shields.io/crates/v/svn.svg" alt="crates.io version">
-  </a>
-  <a href="https://docs.rs/svn">
-    <img src="https://img.shields.io/docsrs/svn?logo=rust" alt="docs.rs docs">
-  </a>
-  <a href="https://github.com/oksyd/svn-rs/actions">
-    <img src="https://github.com/oksyd/svn-rs/actions/workflows/ci.yaml/badge.svg" alt="CI status">
-  </a>
-  <a href="rust-toolchain.toml">
-    <img src="https://img.shields.io/badge/MSRV-1.98.1-informational" alt="MSRV 1.98.1">
-  </a>
-</div>
+An async Subversion client library for Rust, built on Tokio. Read repository
+contents and history, export directories, and commit changes over `svn://` or
+`svn+ssh://` (with the `ssh` feature).
 
-`svn-rs` is an async Subversion client library for Rust. It talks to
-`svnserve` over `svn://`, optionally tunnels `svn+ssh://`, and exposes
-`ra_svn` read, report/editor, lock, and commit APIs. It is not a working copy
-implementation.
+[Crates.io](https://crates.io/crates/svn) · [API documentation](https://docs.rs/svn) ·
+[Examples](examples/README.md) · [CI](https://github.com/oksyd/svn/actions/workflows/ci.yaml)
 
-## Highlights
+Requires Rust 1.100.0 or newer. Supports remote repository access; working copy
+management and `http://`, `https://`, and `file://` transports are outside its scope.
 
-- Async-first `RaSvnClient` and `RaSvnSession`
-- Subversion `svn://` support, plus optional `svn+ssh://`
-- `ra_svn` read operations, report/editor drives, locks, revision property
-  updates, and low-level commit support
-- Structured server errors with code, message, file, line, and command context
-- Optional `serde`, `cyrus-sasl`, and `ssh` features
-
-## Install
+## Usage
 
 ```toml
 [dependencies]
 svn = "0.1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["rt"] }
 ```
 
-Optional features:
-
-```toml
-svn = { version = "0.1", features = ["serde", "ssh", "cyrus-sasl"] }
-```
-
-## Example
+Reuse a session for multiple operations on the same connection:
 
 ```rust,no_run
-use std::time::Duration;
 use svn::{RaSvnClient, SvnUrl};
 
-#[tokio::main]
-async fn main() -> svn::Result<()> {
-    let url = SvnUrl::parse("svn://example.com/repo")?;
+fn main() -> svn::Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
 
-    let client = RaSvnClient::new(url, None, None)
-        .with_connect_timeout(Duration::from_secs(10))
-        .with_read_timeout(Duration::from_secs(30))
-        .with_write_timeout(Duration::from_secs(30));
+    runtime.block_on(async {
+        let client = RaSvnClient::new(SvnUrl::parse("svn://example.com/repo")?, None, None);
+        let mut session = client.open_session().await?;
+        let revision = session.get_latest_rev().await?;
 
-    let mut session = client.open_session().await?;
-    let head = session.get_latest_rev().await?;
-    println!("HEAD = {head}");
-
-    Ok(())
+        // An empty path selects the session URL; pin the revision for this read.
+        let listing = session.list_dir("", Some(revision)).await?;
+        for entry in listing.entries {
+            println!("{} {}", entry.kind, entry.path);
+        }
+        Ok(())
+    })
 }
 ```
 
-## Supported Operations
+See the [crate guide](https://docs.rs/svn/latest/svn/) for API selection, path and
+revision conventions, authentication, and error handling.
 
-- Read: revisions, files, directories, logs, locations, mergeinfo, properties,
-  file revs, locks
-- Report/editor flows: `update`, `switch`, `status`, `diff`, `replay`,
-  `replay-range`
-- Write: revision property changes, lock/unlock, and commit editor commands
+## Optional features
 
-Not included:
+No optional features are enabled by default.
 
-- Working copy management
-- Native TLS for `svn://`
-- Full OpenSSH feature parity
+| Feature | Purpose |
+| --- | --- |
+| `ssh` | `svn+ssh://` through an SSH connection running `svnserve -t` |
+| `serde` | Serialization and deserialization for supported public data types |
+| `cyrus-sasl` | Additional authentication mechanisms and negotiated security layers; requires `libsasl2` and mechanism plugins at runtime |
 
-## Authentication And Transport
+For example: `svn = { version = "0.1", features = ["ssh"] }`.
 
-Built-in `svn://` mechanisms:
+## License
 
-- `ANONYMOUS`
-- `PLAIN`
-- `CRAM-MD5`
-
-`cyrus-sasl` enables Cyrus SASL auth and negotiated SASL security layers.
-`ssh` enables `svn+ssh://` by running `svnserve -t` over SSH.
-
-## Examples
-
-Examples live in [`examples/`](examples):
-
-- `readonly`
-- `get_file`
-- `list`
-- `export`
-- `log_retry`
-- `commit`
-- `locks`
-- `ssh`
-- `sasl`
-
-## Development
-
-Run tests:
-
-```bash
-cargo test --all-features
-```
-
-Interop tests against a real `svnserve`:
-
-```bash
-SVN_INTEROP=1 cargo test --all-features --test interop_svnserve -- --nocapture
-```
-
-API docs: https://docs.rs/svn
+[Apache-2.0](LICENSE)

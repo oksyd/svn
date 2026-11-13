@@ -5,6 +5,27 @@ impl RaSvnSession {
     ///
     /// This convenience helper builds a minimal "empty" report (`start_empty = true`)
     /// and drives [`crate::RaSvnSession::update_with_async_handler`] with a [`TokioFsEditor`].
+    ///
+    /// `options.target` is relative to the session URL; `""` exports that URL's
+    /// tree. Its prefix is stripped so the target's contents are placed directly
+    /// in `dest`. The destination contains exported files, without working copy
+    /// metadata. Use a new or empty destination directory.
+    ///
+    /// Filesystem changes are incremental. A failure can leave a partial export;
+    /// this method does not roll back the destination. See [`TokioFsEditor`] for
+    /// filesystem and historical-copy constraints.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use svn::{Depth, RaSvnSession, UpdateOptions};
+    ///
+    /// async fn export(session: &mut RaSvnSession) -> svn::Result<()> {
+    ///     let revision = session.get_latest_rev().await?;
+    ///     let options = UpdateOptions::new("", Depth::Infinity).with_rev(revision);
+    ///     session.export_to_dir(&options, "exported-tree").await
+    /// }
+    /// ```
     pub async fn export_to_dir(
         &mut self,
         options: &UpdateOptions,

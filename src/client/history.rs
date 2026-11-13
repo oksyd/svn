@@ -8,6 +8,27 @@ impl RaSvnSession {
     }
 
     /// Runs `log` with a [`LogOptions`] builder.
+    ///
+    /// Collects the complete response in memory. Revision endpoints are
+    /// inclusive, and their order determines the traversal direction. Use
+    /// [`RaSvnSession::log_each`] for incremental processing of large histories.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use svn::{LogEntry, LogOptions, LogRevProps, RaSvnSession};
+    ///
+    /// async fn recent_history(session: &mut RaSvnSession) -> svn::Result<Vec<LogEntry>> {
+    ///     let head = session.get_latest_rev().await?;
+    ///     let options = LogOptions {
+    ///         target_paths: vec![String::new()], // The current session URL.
+    ///         limit: 20,
+    ///         revprops: LogRevProps::Custom(vec!["svn:author".into(), "svn:log".into()]),
+    ///         ..LogOptions::between(head, 0)
+    ///     };
+    ///     session.log_with_options(&options).await
+    /// }
+    /// ```
     pub async fn log_with_options(
         &mut self,
         options: &LogOptions,
@@ -139,7 +160,10 @@ impl RaSvnSession {
     ///
     /// This is a lower-allocation alternative to [`RaSvnSession::log_with_options`].
     ///
-    /// Note: this method does not automatically retry on mid-stream connection loss.
+    /// The synchronous callback runs once per received entry and should return
+    /// promptly. Returning an error stops delivery; earlier callback effects
+    /// remain. This method does not automatically retry on mid-stream connection
+    /// loss. See [`RaSvnSession::log_each_retrying`] for a retrying variant.
     pub async fn log_each<F>(
         &mut self,
         options: &LogOptions,
@@ -280,6 +304,12 @@ impl RaSvnSession {
     /// When a retry happens, the `log` command is restarted. To avoid calling
     /// `on_entry` multiple times for the same revision, this method suppresses
     /// entries with a revision number that was already observed.
+    ///
+    /// The deduplication set grows with the number of distinct revisions. It
+    /// also suppresses repeated revisions within merged history, so use
+    /// [`RaSvnSession::log_each`] when the full merged-revision tree matters.
+    /// Callbacks must handle partial delivery: deduplication does not make
+    /// callback side effects transactional or durable across separate calls.
     pub async fn log_each_retrying<F>(
         &mut self,
         options: &LogOptions,

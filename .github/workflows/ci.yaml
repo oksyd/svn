@@ -13,6 +13,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: 1.100.0
 
 jobs:
   lint:
@@ -20,9 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
-      - name: Select Rust toolchain
-        run: rustup default 1.98.1
+        run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt --component clippy
       - uses: actions/cache@v4
         with:
           path: |
@@ -30,39 +29,41 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: cargo-${{ runner.os }}-1.98.1-lint-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}
+          key: cargo-${{ runner.os }}-1.100.0-lint-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}
           restore-keys: |
-            cargo-${{ runner.os }}-1.98.1-
+            cargo-${{ runner.os }}-1.100.0-
             cargo-${{ runner.os }}-
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo doc --no-deps --all-features
-      - run: cargo package --no-verify
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo doc --locked --no-deps --all-features
+      - run: cargo package --locked --no-verify
 
   test:
     runs-on: ${{ matrix.os }}
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            rust: 1.98.1
+            rust: 1.100.0
             case: default
             cargo_args: ""
           - os: ubuntu-latest
-            rust: 1.98.1
+            rust: 1.100.0
             case: no-default-features
             cargo_args: "--no-default-features"
           - os: ubuntu-latest
-            rust: 1.98.1
+            rust: 1.100.0
             case: serde
             cargo_args: "--features serde"
           - os: ubuntu-latest
-            rust: 1.98.1
+            rust: 1.100.0
             case: cyrus-sasl
             cargo_args: "--features cyrus-sasl"
           - os: ubuntu-latest
-            rust: 1.98.1
+            rust: 1.100.0
             case: all-features
             cargo_args: "--all-features"
           - os: ubuntu-latest
@@ -70,27 +71,25 @@ jobs:
             case: stable
             cargo_args: ""
           - os: windows-latest
-            rust: 1.98.1
+            rust: 1.100.0
             case: default
             cargo_args: ""
           - os: windows-latest
-            rust: 1.98.1
+            rust: 1.100.0
             case: all-features
             cargo_args: "--all-features"
           - os: macos-latest
-            rust: 1.98.1
+            rust: 1.100.0
             case: default
             cargo_args: ""
           - os: macos-latest
-            rust: 1.98.1
+            rust: 1.100.0
             case: all-features
             cargo_args: "--all-features"
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust toolchain
         run: rustup toolchain install ${{ matrix.rust }} --profile minimal
-      - name: Select Rust toolchain
-        run: rustup default ${{ matrix.rust }}
       - uses: actions/cache@v4
         with:
           path: |
@@ -102,7 +101,7 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-${{ matrix.rust }}-
             cargo-${{ runner.os }}-
-      - run: cargo test ${{ matrix.cargo_args }}
+      - run: cargo test --locked ${{ matrix.cargo_args }}
 
   interop:
     runs-on: ubuntu-latest
@@ -110,9 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.98.1 --profile minimal
-      - name: Select Rust toolchain
-        run: rustup default 1.98.1
+        run: rustup toolchain install 1.100.0 --profile minimal
       - uses: actions/cache@v4
         with:
           path: |
@@ -120,10 +117,10 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: cargo-${{ runner.os }}-1.98.1-interop-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}
+          key: cargo-${{ runner.os }}-1.100.0-interop-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}
           restore-keys: |
-            cargo-${{ runner.os }}-1.98.1-
+            cargo-${{ runner.os }}-1.100.0-
             cargo-${{ runner.os }}-
       - run: sudo apt-get update
       - run: sudo apt-get install -y subversion
-      - run: SVN_INTEROP=1 cargo test --all-features --test interop_svnserve -- --nocapture
+      - run: SVN_INTEROP=1 cargo test --locked --all-features --test interop_svnserve -- --nocapture

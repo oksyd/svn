@@ -2,6 +2,14 @@ use super::*;
 
 impl RaSvnSession {
     /// Runs `get-dir` and returns a directory listing.
+    ///
+    /// `path` is relative to the session URL; `""` lists the session root.
+    /// `None` selects HEAD, while `Some(rev)` pins the read to that revision.
+    /// The result includes immediate children and the revision served.
+    /// Each [`DirEntry::path`] includes the requested directory prefix, so
+    /// `list_dir("trunk", ...)` can return `"trunk/README.md"`.
+    ///
+    /// Use [`RaSvnSession::list_recursive`] to traverse a subtree.
     pub async fn list_dir(&mut self, path: &str, rev: Option<u64>) -> Result<DirListing, SvnError> {
         let path = validate_rel_dir_path(path)?;
         self.with_retry("get-dir", move |conn| {

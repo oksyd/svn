@@ -16,6 +16,29 @@ use super::util::{
 ///
 /// This is a specialized helper for committing large files without buffering
 /// the full contents in memory.
+///
+/// The builder owns its readers and consumes them during submission. Use
+/// [`CommitBuilder`](crate::CommitBuilder) for directory, copy/move, delete,
+/// or property changes. File paths are relative to the session URL.
+///
+/// # Example
+///
+/// This uploads a local file and creates a repository revision when run.
+///
+/// ```no_run
+/// use svn::{CommitInfo, CommitOptions, CommitStreamBuilder, RaSvnSession};
+///
+/// async fn upload(session: &mut RaSvnSession) -> svn::Result<CommitInfo> {
+///     let base_rev = session.get_latest_rev().await?;
+///     let input = tokio::fs::File::open("archive.tar").await?;
+///     let changes = CommitStreamBuilder::new()
+///         .with_base_rev(base_rev)
+///         .put_file_reader("archive.tar", input);
+///     session
+///         .commit_with_stream_builder(&CommitOptions::new("Upload archive"), changes)
+///         .await
+/// }
+/// ```
 pub struct CommitStreamBuilder {
     base_rev: Option<u64>,
     svndiff: SvndiffMode,
@@ -114,6 +137,10 @@ impl CommitStreamBuilder {
     }
 
     /// Commits the streamed edit to `session`.
+    ///
+    /// Consumes the input readers. Once submission starts, failures are returned
+    /// without automatic replay. See [`RaSvnSession::commit_with_builder`] for
+    /// handling a lost server confirmation.
     pub async fn commit(
         mut self,
         session: &mut RaSvnSession,

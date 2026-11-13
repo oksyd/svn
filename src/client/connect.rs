@@ -3,8 +3,15 @@ use super::*;
 impl RaSvnClient {
     /// Creates a client configuration for a repository URL and optional credentials.
     ///
-    /// Credentials are used when the server offers an auth mechanism supported by
-    /// this crate (for example `PLAIN` or `CRAM-MD5`).
+    /// Performs no network I/O. `base_url` is the anchor for subsequent file and
+    /// directory paths; it may point to a repository root or a subdirectory.
+    ///
+    /// `username` and `password` configure `ra_svn` authentication (for example
+    /// `PLAIN` or `CRAM-MD5`). Use `None, None` for anonymous access. SSH login
+    /// uses `SshConfig` instead and requires the `ssh` feature.
+    ///
+    /// Defaults: connect timeout 10 seconds, read/write timeouts 60 seconds,
+    /// and one retry for operations that support reconnecting.
     pub fn new(base_url: SvnUrl, username: Option<String>, password: Option<String>) -> Self {
         Self {
             base_url,
@@ -55,21 +62,26 @@ impl RaSvnClient {
         &self.ra_client
     }
 
-    /// Sets the connect timeout.
+    /// Sets the transport connection timeout (default: 10 seconds).
     #[must_use]
     pub fn with_connect_timeout(mut self, connect_timeout: Duration) -> Self {
         self.connect_timeout = connect_timeout;
         self
     }
 
-    /// Sets the read timeout.
+    /// Sets the protocol read timeout (default: 60 seconds).
+    ///
+    /// This is an I/O timeout, not a deadline for the entire operation.
     #[must_use]
     pub fn with_read_timeout(mut self, read_timeout: Duration) -> Self {
         self.read_timeout = read_timeout;
         self
     }
 
-    /// Sets the write timeout.
+    /// Sets the protocol write timeout (default: 60 seconds).
+    ///
+    /// This is an I/O timeout, not a deadline for the entire operation or for
+    /// writes to a caller-provided download destination.
     #[must_use]
     pub fn with_write_timeout(mut self, write_timeout: Duration) -> Self {
         self.write_timeout = write_timeout;
@@ -118,7 +130,18 @@ impl RaSvnClient {
         self
     }
 
-    /// Opens a new TCP connection, performs the `ra_svn` handshake, and returns a [`RaSvnSession`].
+    /// Connects, authenticates, and returns a reusable [`RaSvnSession`].
+    ///
+    /// Uses TCP for `svn://` and an SSH tunnel for `svn+ssh://` (requires the
+    /// `ssh` feature). Each call creates an independent connection. Connection
+    /// setup uses the configured timeouts and reconnect retry count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SvnError::Io`] on transport failure, authentication errors when
+    /// credentials or mechanisms are rejected, and [`SvnError::Server`] for
+    /// server-side failures. An `svn+ssh://` URL without the `ssh` feature
+    /// returns [`SvnError::InvalidUrl`].
     pub async fn open_session(&self) -> Result<RaSvnSession, SvnError> {
         let mut session = RaSvnSession {
             client: self.clone(),
@@ -133,8 +156,10 @@ impl RaSvnClient {
     /// Opens a session over an already connected stream.
     ///
     /// This is useful if you want to provide your own transport (for example a
-    /// tunnel or custom proxy). The stream must already be connected to the
-    /// same `host:port` as [`RaSvnClient::base_url`].
+    /// tunnel or custom proxy). The stream must carry `ra_svn` traffic to a
+    /// server that can serve [`RaSvnClient::base_url`]; this method performs the
+    /// protocol handshake, not transport establishment. It takes ownership of
+    /// the stream and applies the configured protocol read/write timeouts.
     ///
     /// Sessions created by this method do **not** auto-reconnect on I/O errors
     /// (because the crate cannot recreate your custom transport). If the stream

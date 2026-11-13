@@ -5,6 +5,10 @@ use crate::{Depth, DirentField, PropertyList};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Options for [`crate::RaSvnSession::get_file_with_options`].
+///
+/// [`new`](Self::new) requires an explicit revision and byte limit and disables
+/// property requests. Add [`with_props`](Self::with_props) or
+/// [`with_iprops`](Self::with_iprops) when the metadata is needed.
 pub struct GetFileOptions {
     /// Revision to fetch.
     pub rev: u64,
@@ -16,7 +20,9 @@ pub struct GetFileOptions {
     /// instead of setting `want-iprops` in `get-file`, to work around
     /// compatibility issues with some `svnserve` versions.
     pub want_iprops: bool,
-    /// Maximum number of bytes to stream.
+    /// Maximum file-content bytes to write; `0` permits only an empty file.
+    ///
+    /// Exceeding the limit returns an error and may leave partial output.
     pub max_bytes: u64,
 }
 
@@ -59,8 +65,15 @@ pub enum LogRevProps {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Options for [`crate::RaSvnSession::log_with_options`].
+///
+/// Start with [`between`](Self::between) for an explicit inclusive range, then
+/// set public fields to filter paths, bound the number of entries, or select
+/// revision properties. The default requests all revision properties and
+/// changed paths, excludes merged revisions, stops at copy boundaries, and
+/// places no limit on the entry count. Set explicit target paths when querying
+/// a subtree; an empty target list is left for the server to interpret.
 pub struct LogOptions {
-    /// Target paths (repository-relative) to include in the log query.
+    /// Target paths to include in the log query, relative to the session URL.
     pub target_paths: Vec<String>,
     /// Start revision (inclusive). `None` uses the server default.
     pub start_rev: Option<u64>,
@@ -68,7 +81,9 @@ pub struct LogOptions {
     pub end_rev: Option<u64>,
     /// Whether to include changed paths in each log entry.
     pub changed_paths: bool,
-    /// Whether to require the target path to exist at the requested revisions.
+    /// Whether to stop history traversal at copy boundaries (`true` by default).
+    ///
+    /// Set to `false` to follow history into a copied node's source.
     pub strict_node: bool,
     /// Maximum number of entries to return (`0` means unlimited).
     pub limit: u64,
@@ -94,7 +109,10 @@ impl Default for LogOptions {
 }
 
 impl LogOptions {
-    /// Convenience constructor for a revision range.
+    /// Creates an inclusive revision range using the other default options.
+    ///
+    /// `between(head, 0)` requests newest-to-oldest history; `between(0, head)`
+    /// requests oldest-to-newest history. Revision `0` is a real revision.
     #[must_use]
     pub fn between(start_rev: u64, end_rev: u64) -> Self {
         Self {
@@ -109,7 +127,7 @@ impl LogOptions {
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Options for [`crate::RaSvnSession::list_with_options`].
 pub struct ListOptions {
-    /// Repository path to list (directory).
+    /// Directory path relative to the session URL; `""` selects its root.
     pub path: String,
     /// Revision to list at; `None` uses the server default (usually HEAD).
     pub rev: Option<u64>,
@@ -161,7 +179,7 @@ impl ListOptions {
 pub struct UpdateOptions {
     /// Revision to update to; `None` usually means HEAD.
     pub rev: Option<u64>,
-    /// Update target path (repository-relative).
+    /// Update target relative to the session URL; `""` selects its root.
     pub target: String,
     /// Update depth.
     pub depth: Depth,
@@ -211,7 +229,7 @@ impl UpdateOptions {
 pub struct SwitchOptions {
     /// Revision to switch to; `None` usually means HEAD.
     pub rev: Option<u64>,
-    /// Working target path (repository-relative).
+    /// Working target path relative to the session URL.
     pub target: String,
     /// URL to switch to.
     pub switch_url: String,
@@ -262,7 +280,7 @@ impl SwitchOptions {
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Options for [`crate::RaSvnSession::status`].
 pub struct StatusOptions {
-    /// Target path (repository-relative).
+    /// Target path relative to the session URL.
     pub target: String,
     /// Revision to compare against; `None` usually means HEAD.
     pub rev: Option<u64>,
@@ -294,7 +312,7 @@ impl StatusOptions {
 pub struct DiffOptions {
     /// Revision to diff against; `None` usually means HEAD.
     pub rev: Option<u64>,
-    /// Target path (repository-relative).
+    /// Target path relative to the session URL.
     pub target: String,
     /// Whether to ignore ancestry.
     pub ignore_ancestry: bool,

@@ -1,8 +1,15 @@
 use super::*;
 
-/// A reusable configuration object for connecting to an `svn://` server.
+/// Connection settings and convenience operations for a Subversion repository.
 ///
-/// Use [`RaSvnClient::open_session`] to create a connected [`RaSvnSession`].
+/// Construction and cloning perform no network I/O. Call
+/// [`open_session`](Self::open_session) to create a connected [`RaSvnSession`]
+/// and reuse it for several operations. Convenience methods on this type open
+/// a new session for each call.
+///
+/// Supports `svn://` and, with the `ssh` feature, `svn+ssh://`. For concurrency
+/// with connection reuse, create a [`SessionPool`](crate::SessionPool).
+/// See the [crate guide](crate) for a complete connection example.
 #[derive(Clone, Debug)]
 pub struct RaSvnClient {
     pub(super) base_url: SvnUrl,
@@ -17,11 +24,25 @@ pub struct RaSvnClient {
     pub(super) ssh: Option<crate::ssh::SshConfig>,
 }
 
-/// A connected, stateful session to an `svn://` server.
+/// A connected Subversion session anchored at a repository URL.
 ///
-/// A session owns a single TCP connection; operations require `&mut self` and
-/// therefore run serially on that connection. Reuse a session if you want to
-/// avoid reconnecting/handshaking for each operation.
+/// Created by [`RaSvnClient::open_session`] or
+/// [`RaSvnClient::open_session_with_stream`]. A session owns one transport
+/// connection; methods take `&mut self` and run sequentially. Use separate
+/// sessions or a [`SessionPool`](crate::SessionPool) for concurrent requests.
+///
+/// File and directory paths are relative to [`client`](Self::client)'s base URL.
+/// [`reparent`](Self::reparent) changes that base for subsequent requests.
+/// See [paths and revisions](crate#paths-and-revisions) for examples.
+///
+/// # Errors and cancellation
+///
+/// Methods document their retry and partial-result behavior. Cancelling an
+/// in-flight operation can leave unread protocol data on the connection.
+/// Before reusing such a session, call [`reconnect`](Self::reconnect); for a
+/// custom stream, create a replacement session instead. A pooled session is
+/// returned on drop, so reconnect it before returning it to the pool after
+/// cancellation. Dropping the pool guard alone does not discard the connection.
 pub struct RaSvnSession {
     pub(super) client: RaSvnClient,
     pub(super) conn: Option<RaSvnConnection>,

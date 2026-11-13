@@ -50,6 +50,38 @@ pub enum SshHostKeyPolicy {
 }
 
 /// Configuration for the `svn+ssh://` transport.
+///
+/// Requires the `ssh` Cargo feature. Pass this to
+/// [`crate::RaSvnClient::with_ssh_config`]; the username/password arguments of
+/// [`crate::RaSvnClient::new`] configure `ra_svn`, not SSH authentication.
+///
+/// [`SshConfig::default`] reads OpenSSH configuration, tries the SSH agent and
+/// default identities, and uses the user's `known_hosts` file. OpenSSH settings
+/// can affect the effective host-key policy. [`SshConfig::new`] selects an
+/// explicit authentication method without enabling agent/default-identity
+/// fallback. The default remote command is `svnserve -t`.
+///
+/// # Example
+///
+/// Connect with an explicit private key and known-hosts file. This configuration
+/// disables reading `~/.ssh/config`, so the example's settings are self-contained.
+///
+/// ```no_run
+/// use svn::{RaSvnClient, SshAuth, SshConfig, SvnUrl};
+///
+/// async fn ssh_head() -> svn::Result<u64> {
+///     let ssh = SshConfig::new(SshAuth::KeyFile {
+///         path: "/home/alice/.ssh/id_ed25519".into(),
+///         passphrase: None,
+///     })
+///     .with_username("alice")
+///     .with_known_hosts_file("/home/alice/.ssh/known_hosts")
+///     .with_openssh_config(false);
+///     let client = RaSvnClient::new(SvnUrl::parse("svn+ssh://example.com/repo")?, None, None)
+///         .with_ssh_config(ssh);
+///     client.get_latest_rev().await
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SshConfig {
     username: Option<String>,

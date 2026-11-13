@@ -44,16 +44,43 @@ pub enum ReportCommand {
     },
     /// Terminates the report successfully.
     FinishReport,
-    /// Aborts the report.
+    /// A wire-level abort marker.
+    ///
+    /// The session's report-driven APIs require [`ReportCommand::FinishReport`]
+    /// and reject reports ending with this variant.
     AbortReport,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-/// A sequence of [`ReportCommand`] values.
+/// The caller's existing tree state for update, switch, status, or diff.
+///
+/// The server compares the reported paths and revisions with the requested
+/// target and sends [`EditorEvent`] values to describe the changes. An empty
+/// [`Report::new`] is not a description of an empty tree: report the root with
+/// `start_empty: true`, then call [`finish`](Self::finish).
+///
+/// # Example
+///
+/// Describe an empty tree before requesting a full update. For an export to
+/// disk, [`crate::RaSvnSession::export_to_dir`] builds this report for you.
+///
+/// ```
+/// use svn::{Depth, Report, ReportCommand};
+///
+/// let mut report = Report::new();
+/// report.push(ReportCommand::SetPath {
+///     path: String::new(),
+///     rev: 0,
+///     start_empty: true,
+///     lock_token: None,
+///     depth: Depth::Infinity,
+/// });
+/// report.finish();
+/// ```
 pub struct Report {
-    /// Commands in the report. Reports must end with `finish-report` or
-    /// `abort-report`.
+    /// Ordered commands; session APIs require [`ReportCommand::FinishReport`]
+    /// as the final command.
     pub commands: Vec<ReportCommand>,
 }
 
@@ -81,6 +108,12 @@ impl Report {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Server-to-client editor events returned by report-driven operations.
+///
+/// Events describe tree edits in protocol order. Tokens identify open file and
+/// directory handles within the edit. `TextDeltaChunk` payloads are svndiff
+/// data; use [`crate::TextDeltaApplier`] to reconstruct file contents.
+/// [`EditorEventHandler`] receives events synchronously;
+/// [`AsyncEditorEventHandler`] supports async processing.
 pub enum EditorEvent {
     /// Reports the target revision.
     TargetRev {

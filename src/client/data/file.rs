@@ -39,7 +39,33 @@ impl RaSvnSession {
 
     /// Runs `get-file`, streaming file contents into `out`.
     ///
-    /// Returns the number of bytes written.
+    /// `path` is nonempty and relative to the session URL. `rev` is an explicit
+    /// repository revision; resolve HEAD with [`RaSvnSession::get_latest_rev`].
+    /// Returns the number of bytes written, at most `max_bytes`.
+    ///
+    /// `want_props` requests properties but this method discards the metadata;
+    /// use [`RaSvnSession::get_file_with_result`] to retain it. For a successful
+    /// in-memory result, use [`RaSvnSession::get_file_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// Exceeding `max_bytes` returns [`SvnError::Protocol`]. On any failure, `out`
+    /// may already contain part of the file; it is not rewound or cleared. The
+    /// transfer is not automatically restarted after bytes have been written.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use svn::RaSvnSession;
+    ///
+    /// async fn download(session: &mut RaSvnSession) -> svn::Result<()> {
+    ///     let revision = session.get_latest_rev().await?;
+    ///     let mut output = tokio::fs::File::create("README.download").await?;
+    ///     session.get_file("README.md", revision, false, &mut output, 1_048_576).await?;
+    ///     output.sync_all().await?;
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn get_file<W: tokio::io::AsyncWrite + Unpin>(
         &mut self,
         path: &str,
@@ -56,8 +82,22 @@ impl RaSvnSession {
 
     /// Runs `get-file` and collects file contents into memory.
     ///
-    /// This is a convenience wrapper around [`RaSvnSession::get_file`] for
-    /// callers that don't need streaming.
+    /// `path` is relative to the session URL and must identify a file. Returns
+    /// its complete raw bytes at `rev`, without UTF-8 decoding. The returned
+    /// buffer is bounded by `max_bytes`; a larger file returns
+    /// [`SvnError::Protocol`]. A zero limit accepts only an empty file.
+    /// Use [`RaSvnSession::get_file`] to stream larger files to an async writer.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use svn::RaSvnSession;
+    ///
+    /// async fn read_readme(session: &mut RaSvnSession) -> svn::Result<Vec<u8>> {
+    ///     let revision = session.get_latest_rev().await?;
+    ///     session.get_file_bytes("README.md", revision, 1_048_576).await
+    /// }
+    /// ```
     pub async fn get_file_bytes(
         &mut self,
         path: &str,
@@ -70,6 +110,9 @@ impl RaSvnSession {
     }
 
     /// Like [`RaSvnSession::get_file`], but also returns additional metadata.
+    ///
+    /// See [`GetFileResult`] for the served revision, checksum, properties, and
+    /// byte count. The same size limit and partial-output behavior apply.
     pub async fn get_file_with_result<W: tokio::io::AsyncWrite + Unpin>(
         &mut self,
         path: &str,
@@ -88,6 +131,11 @@ impl RaSvnSession {
     }
 
     /// Runs `get-file` with a [`GetFileOptions`] builder.
+    ///
+    /// Uses the path, size-limit, and partial-output semantics of
+    /// [`RaSvnSession::get_file`]. Inherited properties are requested separately
+    /// when enabled and supported by the server. File contents may therefore
+    /// have been fully written even if the later property request fails.
     pub async fn get_file_with_options<W: tokio::io::AsyncWrite + Unpin>(
         &mut self,
         path: &str,

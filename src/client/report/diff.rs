@@ -3,8 +3,9 @@ use super::*;
 impl RaSvnSession {
     /// Runs `diff` using a client-provided report and consumes the editor drive.
     ///
-    /// The report must end with [`ReportCommand::FinishReport`] or
-    /// [`ReportCommand::AbortReport`]. Editor events are delivered to `handler`.
+    /// The report must end with [`ReportCommand::FinishReport`]. Editor events
+    /// are delivered to `handler`; an abort terminator is rejected. See [`Report`]
+    /// for the report format and an empty-tree example.
     pub async fn diff(
         &mut self,
         options: &DiffOptions,
@@ -69,8 +70,9 @@ impl RaSvnSession {
     /// Runs `diff` using a client-provided report and consumes the editor drive with
     /// an async handler.
     ///
-    /// The report must end with [`ReportCommand::FinishReport`] or
-    /// [`ReportCommand::AbortReport`]. Editor events are delivered to `handler`.
+    /// The report must end with [`ReportCommand::FinishReport`]. Editor events
+    /// are delivered to `handler`; an abort terminator is rejected. See [`Report`]
+    /// for the report format and an empty-tree example.
     pub async fn diff_with_async_handler(
         &mut self,
         options: &DiffOptions,

@@ -49,7 +49,9 @@ impl RaSvnSession {
 
     /// Changes the repository URL for this session (server-side `reparent`).
     ///
-    /// This is only allowed within the same `host:port` pair.
+    /// The scheme, URL username, host, and port must match the current URL.
+    /// The server must also accept the new repository path. On success, file
+    /// and directory paths in later requests are relative to `new_base_url`.
     pub async fn reparent(&mut self, new_base_url: SvnUrl) -> Result<(), SvnError> {
         if new_base_url.scheme() != self.client.base_url.scheme()
             || new_base_url.username() != self.client.base_url.username()
@@ -82,7 +84,11 @@ impl RaSvnSession {
         Ok(())
     }
 
-    /// Reconnects the underlying TCP connection and performs a new handshake.
+    /// Opens a replacement transport connection and performs a new handshake.
+    ///
+    /// Uses the session's current client configuration, including any successful
+    /// [`reparent`](Self::reparent). Custom-stream sessions return
+    /// [`SvnError::Protocol`]; open a new session with a new stream instead.
     pub async fn reconnect(&mut self) -> Result<(), SvnError> {
         if !self.allow_reconnect {
             return Err(SvnError::Protocol(

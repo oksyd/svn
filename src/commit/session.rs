@@ -3,19 +3,34 @@ use crate::{CommitInfo, CommitOptions, RaSvnClient, RaSvnSession, SvnError};
 use super::{CommitBuilder, CommitStreamBuilder};
 
 impl RaSvnSession {
-    /// Runs `commit`, building a low-level editor drive from `builder`.
+    /// Submits the changes in `builder` as one repository commit.
+    ///
+    /// Put/add/replace/delete paths are relative to the current session URL.
+    /// Returns [`CommitInfo`] with the new revision after server confirmation.
+    ///
+    /// # Errors
+    ///
+    /// Local validation, authorization, hooks, or conflicting repository changes
+    /// can reject the edit. A submitted commit is not automatically retried.
+    /// A transport failure while awaiting confirmation leaves the outcome
+    /// uncertain; inspect repository history before resubmitting.
+    ///
+    /// # Example
+    ///
+    /// This creates a repository revision when run against a writable session.
     ///
     /// ```rust,no_run
-    /// # use svn::{CommitBuilder, CommitOptions, RaSvnSession};
-    /// # async fn demo(session: &mut RaSvnSession, head: u64) -> svn::Result<()> {
-    /// let builder = CommitBuilder::new()
-    ///     .with_base_rev(head)
-    ///     .put_file("trunk/hello.txt", b"hello from svn-rs\n".to_vec());
-    /// session
-    ///     .commit_with_builder(&CommitOptions::new("edit file contents"), &builder)
-    ///     .await?;
-    /// # Ok(())
-    /// # }
+    /// use svn::{CommitBuilder, CommitInfo, CommitOptions, RaSvnSession};
+    ///
+    /// async fn write_greeting(session: &mut RaSvnSession) -> svn::Result<CommitInfo> {
+    ///     let base_rev = session.get_latest_rev().await?;
+    ///     let changes = CommitBuilder::new()
+    ///         .with_base_rev(base_rev)
+    ///         .put_file("hello.txt", b"hello from Rust\n".to_vec());
+    ///     session
+    ///         .commit_with_builder(&CommitOptions::new("Update greeting"), &changes)
+    ///         .await
+    /// }
     /// ```
     pub async fn commit_with_builder(
         &mut self,
@@ -27,6 +42,10 @@ impl RaSvnSession {
     }
 
     /// Runs `commit`, streaming file contents from a [`CommitStreamBuilder`].
+    ///
+    /// Consumes the builder and its readers. See [`CommitStreamBuilder`] for an
+    /// upload example. The commit outcome and failure semantics are the same
+    /// as [`RaSvnSession::commit_with_builder`].
     pub async fn commit_with_stream_builder(
         &mut self,
         options: &CommitOptions,

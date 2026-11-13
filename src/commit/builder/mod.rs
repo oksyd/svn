@@ -12,10 +12,21 @@ use super::util::{
 mod build;
 mod plan;
 
-/// High-level commit editor builder.
+/// A plan for committing in-memory file, directory, and property changes.
 ///
-/// This builder generates a low-level editor command sequence so callers don't
-/// need to manually craft `EditorCommand::TextDeltaChunk` values.
+/// Builder methods record changes locally. Submit the plan with
+/// [`RaSvnSession::commit_with_builder`]; it resolves repository state, generates
+/// editor commands and svndiff data, and performs one commit. Validation that
+/// depends on the repository happens during building/submission.
+///
+/// File contents and generated deltas are held in memory. For large uploads,
+/// use [`CommitStreamBuilder`](crate::CommitStreamBuilder). Set
+/// [`with_base_rev`](Self::with_base_rev) to the revision on which your edit is
+/// based; otherwise building queries HEAD. The server can reject edits that
+/// conflict with newer changes.
+///
+/// See [`RaSvnSession::commit_with_builder`] for a complete example and failure
+/// semantics.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct CommitBuilder {

@@ -46,3 +46,16 @@ These examples perform real server writes and are disabled unless `SVN_WRITE=1`.
 - `ssh`: `cargo run --example ssh --features ssh` (`svn+ssh://` via SSH tunnel)
 - `sasl`: `cargo run --example sasl --features cyrus-sasl` (Cyrus SASL + security layer)
 
+## Testing
+
+Run unit tests and rustdoc examples with `cargo test --locked --all-features`.
+
+To run the interop suite, install Subversion (`svn`, `svnadmin`, and `svnserve`
+on `PATH`), then run:
+
+```sh
+SVN_INTEROP=1 cargo test --locked --all-features --test interop_svnserve -- --nocapture
+```
+
+The suite creates temporary local repositories and starts its own `svnserve`.
+

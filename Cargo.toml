@@ -2,13 +2,12 @@
 name = "svn"
 version = "0.1.16"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.100.0"
 license = "Apache-2.0"
 description = "Async Rust SVN client for Subversion svn://, svn+ssh://, and ra_svn workflows."
 readme = "README.md"
 documentation = "https://docs.rs/svn"
-repository = "https://github.com/oksyd/svn-rs"
-homepage = "https://github.com/oksyd/svn-rs"
+repository = "https://github.com/oksyd/svn"
 keywords = ["svn", "subversion", "svnserve", "ra_svn", "async"]
 categories = ["network-programming", "asynchronous"]
 include = [
@@ -32,25 +31,28 @@ ssh = ["dep:russh"]
 base64 = { version = "0.23.1", default-features = false, features = ["alloc"], optional = true }
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
 hmac = { version = "0.13.0", default-features = false }
-flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 libloading = { version = "0.9.0", default-features = false, optional = true }
 lz4_flex = { version = "0.14.0", default-features = false, features = ["std"] }
 md-5 = { version = "0.11.0", default-features = false }
-russh = { version = "0.63.3", default-features = false, features = ["ring", "rsa"], optional = true }
-serde = { version = "1.0.228", default-features = false, features = ["derive", "std"], optional = true }
-thiserror = { version = "2.0.18", default-features = false, features = ["std"] }
-tokio = { version = "1.52.1", default-features = false, features = ["fs", "io-util", "net", "rt", "sync", "time"] }
+russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa"], optional = true }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"], optional = true }
+thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
+tokio = { version = "1.54.1", default-features = false, features = ["fs", "io-util", "net", "rt", "sync", "time"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
-similar = { version = "3.1.0", default-features = false, features = ["text"] }
+similar = { version = "3.2.1", default-features = false, features = ["text"] }
 
 [dev-dependencies]
 criterion = "0.8.2"
-proptest = "1.11.0"
+proptest = "1.12.0"
 tempfile = "3.27.0"
 
 [[bench]]
 name = "bench"
 harness = false
+
+[lints.cargo]
+unused_dependencies = "deny"
 
 [lints.rust]
 unsafe_code = "deny"
@@ -66,6 +68,7 @@ unwrap_used = "deny"
 
 [lints.rustdoc]
 broken_intra_doc_links = "deny"
+invalid_markdown_table = "deny"
 
 [package.metadata.docs.rs]
 all-features = true

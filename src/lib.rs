@@ -1,62 +1,147 @@
-//! Async client for Subversion's `svn://` (`ra_svn`) protocol.
+//! Async Subversion repository access over `svn://` and optional `svn+ssh://`.
 //!
-//! This crate implements a subset of Subversion's remote access protocol used by
-//! `svnserve` (the `svn://` scheme). It is a network client and does **not**
-//! implement a working copy.
+//! Use this crate to read files and history, export directories, manage locks,
+//! and commit changes through the `ra_svn` protocol served by `svnserve`.
+//! Operations run on Tokio. The crate implements remote repository access;
+//! working copy management and HTTP(S) or `file://` transports are outside its scope.
 //!
-//! Most users should start with [`RaSvnClient`] to create a connected
-//! [`RaSvnSession`].
+//! Start with [`SvnUrl`], [`RaSvnClient`], and [`RaSvnSession`]. All public API
+//! types are available at the crate root, except wire items in [`raw`].
 //!
-//! ## Getting started
+//! # Quick start
+//!
+//! Add these dependencies to your `Cargo.toml` (Rust 1.100.0 or newer):
+//!
+//! ```toml
+//! [dependencies]
+//! svn = "0.1"
+//! tokio = { version = "1", features = ["rt"] }
+//! ```
+//!
+//! This example opens an anonymous session and lists its root at a fixed revision.
+//! In an existing Tokio application, use the async block's contents directly.
 //!
 //! ```rust,no_run
-//! use std::time::Duration;
 //! use svn::{RaSvnClient, SvnUrl};
 //!
 //! fn main() -> svn::Result<()> {
-//!     let rt = tokio::runtime::Builder::new_current_thread()
+//!     let runtime = tokio::runtime::Builder::new_current_thread()
 //!         .enable_all()
 //!         .build()?;
 //!
-//!     rt.block_on(async {
-//!         let url = SvnUrl::parse("svn://example.com/repo")?;
-//!         let client = RaSvnClient::new(url, None, None)
-//!             .with_read_timeout(Duration::from_secs(30));
-//!
-//!         // A session reuses one connection and caches server info.
+//!     runtime.block_on(async {
+//!         let client = RaSvnClient::new(SvnUrl::parse("svn://example.com/repo")?, None, None);
 //!         let mut session = client.open_session().await?;
-//!         let latest = session.get_latest_rev().await?;
-//!         println!("{latest}");
+//!         let revision = session.get_latest_rev().await?;
+//!
+//!         // An empty path selects the session URL; pin the revision for this read.
+//!         let listing = session.list_dir("", Some(revision)).await?;
+//!         for entry in listing.entries {
+//!             println!("{} {}", entry.kind, entry.path);
+//!         }
 //!         Ok(())
 //!     })
 //! }
 //! ```
 //!
-//! ## Features
+//! # Choose an API
 //!
-//! - `serde`: enables `Serialize`/`Deserialize` for public data types.
-//! - `cyrus-sasl`: enables Cyrus SASL authentication and (when negotiated)
-//!   the SASL security layer (requires a system-provided `libsasl2` at runtime).
-//! - `ssh`: enables `svn+ssh://` by running `svnserve -t` over SSH (via `russh`).
+//! | Task | Entry point |
+//! | --- | --- |
+//! | Read a small file into memory | [`RaSvnSession::get_file_bytes`] |
+//! | Stream a file to an async writer | [`RaSvnSession::get_file`], [`GetFileOptions`] |
+//! | List a directory or subtree | [`RaSvnSession::list_dir`], [`RaSvnSession::list_recursive`] |
+//! | Read commit history | [`RaSvnSession::log_with_options`], [`LogOptions`] |
+//! | Process history incrementally | [`RaSvnSession::log_each`], [`RaSvnSession::log_each_retrying`] |
+//! | Read properties and file history | [`RaSvnSession::proplist`], [`RaSvnSession::get_file_revs_with_contents`] |
+//! | Produce a text diff or blame | [`RaSvnSession::diff_file_unified`], [`RaSvnSession::blame_file`] |
+//! | Export files to disk | [`RaSvnSession::export_to_dir`] |
+//! | Commit in-memory changes or stream uploads | [`CommitBuilder`], [`CommitStreamBuilder`] |
+//! | Acquire or release locks | [`RaSvnSession::lock`], [`RaSvnSession::unlock`] |
+//! | Run independent requests concurrently | [`SessionPool`], [`SessionPools`] |
+//! | Consume protocol edits | [`Report`], [`EditorEvent`], [`AsyncEditorEventHandler`] |
 //!
-//! ## Protocol notes
+//! # Paths and revisions
 //!
-//! - `svn://` is supported.
-//! - `svn+ssh://` is supported with the `ssh` feature (see `SshConfig`).
-//! - IPv6 URLs must use brackets (for example `svn://[::1]/repo`).
-//! - Built-in authentication mechanisms: `ANONYMOUS`, `PLAIN`, and `CRAM-MD5`.
-//!   With `cyrus-sasl`, the client can also use Cyrus SASL (including the
-//!   optional SASL security layer when negotiated).
+//! File and directory request paths are relative to the session's current URL.
+//! For a session at `svn://host/repo/trunk`, `"src/lib.rs"` selects
+//! `svn://host/repo/trunk/src/lib.rs`. Directory operations accept `""` for the
+//! session root; file downloads require a nonempty path. Use `/` separators.
+//! Parent traversal (`..`) and NUL bytes are rejected with [`SvnError::InvalidPath`].
+//! Returned paths may follow different conventions; consult the result type,
+//! especially [`ChangedPath`] and [`DirEntry`].
 //!
-//! ## Custom transports
+//! Revisions are repository-wide `u64` numbers. Revision `0` is the initial
+//! revision, not an alias for HEAD. Call [`RaSvnSession::get_latest_rev`] to
+//! resolve HEAD, then reuse that number for reads that need a consistent
+//! snapshot. Optional revisions use each operation's documented server default.
+//! [`LogOptions::between`] includes both endpoints and controls traversal order.
 //!
-//! If you need to bring your own transport (for example a custom proxy/tunnel),
-//! you can connect the stream yourself and then call
-//! [`RaSvnClient::open_session_with_stream`].
+//! File contents and [`PropertyList`] values are bytes. Decode them as text only
+//! when the content's encoding is known. Download methods require a `max_bytes`
+//! limit; exceeding it returns an error rather than a successful truncated result.
 //!
-//! ## Low-level access
+//! # Connections and concurrency
 //!
-//! For raw wire protocol items, see [`raw::SvnItem`].
+//! [`RaSvnClient`] stores configuration and opens connections on demand. Its
+//! convenience methods, such as [`RaSvnClient::get_latest_rev`], open a new session
+//! for each call. Reuse a [`RaSvnSession`] for sequential operations on one
+//! connection, or a [`SessionPool`] for bounded concurrent access. Cloning a
+//! client copies configuration; cloning a pool shares the same pool.
+//!
+//! Default timeouts are 10 seconds for connecting and 60 seconds for protocol
+//! reads and writes. They are configurable on [`RaSvnClient`]; read/write timeouts
+//! apply to transport I/O rather than the total duration of a multi-step operation.
+//! The runtime must have I/O and time enabled, as in the quick start above.
+//!
+//! For an existing proxy or tunnel, use [`RaSvnClient::open_session_with_stream`].
+//! A custom-stream session cannot reconnect itself: supply a new stream and open
+//! a new session when the connection is lost.
+//!
+//! # Authentication and features
+//!
+//! For `svn://`, pass optional username/password credentials to
+//! [`RaSvnClient::new`]. Built-in mechanisms are `ANONYMOUS`, `PLAIN`, and
+//! `CRAM-MD5`; the server determines which are available. Plain `svn://` has no
+//! transport encryption. Use SSH or a suitably configured SASL security layer
+//! when the connection needs protection.
+//!
+//! No optional features are enabled by default.
+//!
+//! | Cargo feature | Behavior |
+//! | --- | --- |
+//! | `ssh` | Enables `svn+ssh://`, using `SshConfig` to authenticate over SSH and run `svnserve -t` remotely. SSH credentials are separate from the `ra_svn` credentials passed to `RaSvnClient::new`. |
+//! | `serde` | Adds Serde serialization/deserialization to supported public data types. |
+//! | `cyrus-sasl` | Enables additional SASL mechanisms and negotiated security layers. Requires system `libsasl2` and the chosen mechanism's plugins at runtime. |
+//!
+//! # Errors and retries
+//!
+//! Operations return [`Result<T>`] with [`SvnError`]. Server failures preserve
+//! a [`ServerError`] containing the command context and Subversion error chain.
+//! Network and filesystem failures use [`SvnError::Io`]; protocol violations and
+//! some local limits use [`SvnError::Protocol`].
+//!
+//! Retry behavior depends on the operation. [`RaSvnClient::with_reconnect_retries`]
+//! controls retries for connection setup and methods that support them.
+//! [`RaSvnSession::log_each`] does not resume interrupted delivery; choose
+//! [`RaSvnSession::log_each_retrying`] when revision-based deduplication is suitable.
+//! Commits are not automatically replayed after a failure. If a connection fails
+//! after submission, check repository state before submitting the same edit again.
+//!
+//! Streaming writers and callbacks can observe partial results before an error;
+//! the crate does not roll back their effects. If an in-flight operation is
+//! cancelled (for example by dropping its future), reconnect or replace the
+//! session before issuing another command. See [`RaSvnSession`] for pool usage.
+//!
+//! # Reports and editors
+//!
+//! [`Report`] describes the caller's existing tree and revisions. Operations such
+//! as [`RaSvnSession::update`] compare that state with the repository and send
+//! [`EditorEvent`] values to a handler. File delta chunks contain svndiff data;
+//! use [`TextDeltaApplier`] or [`TextDeltaApplierSync`] to reconstruct contents.
+//! [`RaSvnSession::export_to_dir`] supplies the report and filesystem handler for
+//! a fresh export. For client-to-server edits, prefer [`CommitBuilder`] over
+//! constructing [`EditorCommand`] sequences manually.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(unsafe_code)]

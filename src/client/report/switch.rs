@@ -3,8 +3,9 @@ use super::*;
 impl RaSvnSession {
     /// Runs `switch` using a client-provided report and consumes the editor drive.
     ///
-    /// The report must end with [`ReportCommand::FinishReport`] or
-    /// [`ReportCommand::AbortReport`]. Editor events are delivered to `handler`.
+    /// The report must end with [`ReportCommand::FinishReport`]. Editor events
+    /// are delivered to `handler`; an abort terminator is rejected. See [`Report`]
+    /// for the report format and an empty-tree example.
     pub async fn switch(
         &mut self,
         options: &SwitchOptions,
@@ -69,8 +70,9 @@ impl RaSvnSession {
     /// Runs `switch` using a client-provided report and consumes the editor drive with
     /// an async handler.
     ///
-    /// The report must end with [`ReportCommand::FinishReport`] or
-    /// [`ReportCommand::AbortReport`]. Editor events are delivered to `handler`.
+    /// The report must end with [`ReportCommand::FinishReport`]. Editor events
+    /// are delivered to `handler`; an abort terminator is rejected. See [`Report`]
+    /// for the report format and an empty-tree example.
     pub async fn switch_with_async_handler(
         &mut self,
         options: &SwitchOptions,
