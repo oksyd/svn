@@ -19,7 +19,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt --component clippy
       - uses: actions/cache@v4
@@ -87,7 +87,7 @@ jobs:
             case: all-features
             cargo_args: "--all-features"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         run: rustup toolchain install ${{ matrix.rust }} --profile minimal
       - uses: actions/cache@v4
@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         run: rustup toolchain install 1.100.0 --profile minimal
       - uses: actions/cache@v4
