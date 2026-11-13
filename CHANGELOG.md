@@ -3,6 +3,10 @@
 ### 🐛 Bug Fixes
 
 - Include required empty list in all-revprops log requests
+
+### ⚙️ Miscellaneous Tasks
+
+- Release svn version 0.1.16
 ## [0.1.15] - 2026-09-26
 
 ### 🐛 Bug Fixes
