@@ -213,7 +213,12 @@ impl RaSvnConnection {
             let token = parts
                 .get(1)
                 .and_then(|i| i.as_list())
-                .and_then(|list| list.first().and_then(|i| i.as_bytes_string()))
+                .and_then(|list| {
+                    list.first().and_then(|i| {
+                        i.as_string()
+                            .map(|s| s.split_whitespace().collect::<String>().into_bytes())
+                    })
+                })
                 .ok_or_else(|| SvnError::Protocol("SASL step missing token".into()))?;
             let token = if mech == "CRAM-MD5" {
                 token
